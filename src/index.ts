@@ -16,6 +16,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static("public"));
 
 // Log all incoming requests (shorten headers for readability)
 app.use((req, res, next) => {
@@ -34,6 +35,7 @@ app.get("/.well-known/oauth-protected-resource", (req, res) => {
     resource: baseUrl,
     authorization_servers: [`${baseUrl}`],
     bearer_methods_supported: ["header"],
+    logo_uri: `${baseUrl}/logo.jpg`,
   });
 });
 
@@ -49,6 +51,8 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
     grant_types_supported: ["authorization_code"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
+    logo_uri: `${baseUrl}/logo.jpg`,
+    service_name: "Baby Shower Chocolate",
   });
 });
 
