@@ -161,7 +161,18 @@ app.get(["/", "/sse"], async (req, res) => {
   transports.set(connectionTransport.sessionId, connectionTransport);
   console.log(`[SSE] Session created: ${connectionTransport.sessionId}`);
 
+  // Send a heartbeat comment every 15 seconds to keep the connection alive through Render/Cloudflare proxies
+  const heartbeatInterval = setInterval(() => {
+    try {
+      res.write(":\n\n");
+      console.log(`[SSE] Heartbeat sent to session: ${connectionTransport.sessionId}`);
+    } catch (err) {
+      console.error(`[SSE] Failed to send heartbeat: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, 15000);
+
   req.on("close", () => {
+    clearInterval(heartbeatInterval);
     transports.delete(connectionTransport.sessionId);
     console.log(`[SSE] Session closed/cleaned: ${connectionTransport.sessionId}`);
   });
