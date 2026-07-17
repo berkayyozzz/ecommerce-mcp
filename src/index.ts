@@ -16,6 +16,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Log all incoming requests
+app.use((req, res, next) => {
+  console.log(`[REQUEST] ${req.method} ${req.url} - Headers: ${JSON.stringify(req.headers)}`);
+  next();
+});
+
 const server = new Server(
   {
     name: "ecommerce-mcp-server",
