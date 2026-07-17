@@ -25,7 +25,78 @@ app.use((req, res, next) => {
 // Store active transports by sessionId
 const transports = new Map<string, SSEServerTransport>();
 
-// Map both root (/) and /sse to SSE transport handler
+// ─────────────────────────────────────────────────────────────────────────────
+// OAuth Discovery Endpoints (required by Claude Web MCP connector)
+// Claude checks these before establishing a real connection.
+// We declare "no auth required" so it proceeds without a login screen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RFC 9728 – OAuth 2.0 Protected Resource Metadata
+app.get("/.well-known/oauth-protected-resource", (req, res) => {
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  console.log("[OAuth] Serving oauth-protected-resource metadata");
+  res.json({
+    resource: baseUrl,
+    authorization_servers: [],
+    bearer_methods_supported: [],
+  });
+});
+
+// RFC 8414 – Authorization Server Metadata
+app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  console.log("[OAuth] Serving oauth-authorization-server metadata");
+  res.json({
+    issuer: baseUrl,
+    authorization_endpoint: `${baseUrl}/authorize`,
+    token_endpoint: `${baseUrl}/token`,
+    registration_endpoint: `${baseUrl}/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256"],
+  });
+});
+
+// RFC 7591 – Dynamic Client Registration
+app.post("/register", (req, res) => {
+  console.log("[OAuth] Dynamic client registration request received");
+  // Issue a fake client_id so Claude proceeds past registration
+  res.status(201).json({
+    client_id: `mcp-client-${Date.now()}`,
+    client_secret: "no-secret",
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    redirect_uris: req.body?.redirect_uris || [],
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+  });
+});
+
+// Authorize & Token endpoints (not really used, but Claude may probe them)
+app.get("/authorize", (req, res) => {
+  const redirectUri = req.query.redirect_uri as string;
+  const state = req.query.state as string;
+  const code = "mcp-bypass-code";
+  if (redirectUri) {
+    const url = new URL(redirectUri);
+    url.searchParams.set("code", code);
+    if (state) url.searchParams.set("state", state);
+    console.log(`[OAuth] Redirecting to: ${url.toString()}`);
+    res.redirect(url.toString());
+  } else {
+    res.json({ code });
+  }
+});
+
+app.post("/token", (req, res) => {
+  console.log("[OAuth] Token exchange request received");
+  res.json({
+    access_token: "mcp-no-auth-token",
+    token_type: "bearer",
+    expires_in: 86400,
+  });
+});
+
+
 app.get(["/", "/sse"], async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
 
@@ -200,7 +271,7 @@ app.post(["/", "/messages"], async (req, res) => {
   }
 
   if (activeTransport) {
-    await activeTransport.handlePostMessage(req, res);
+    await activeTransport.handlePostMessage(req, res, req.body);
   } else {
     console.warn(`[MESSAGE] Session not found for ID: ${sessionId || "none"}. Active sessions: ${transports.size}`);
     res.status(400).send("No active SSE session found");
