@@ -180,16 +180,29 @@ app.get(["/", "/sse"], async (req, res) => {
   await connectionServer.connect(connectionTransport);
 });
 
-// Handle message routing
-app.post("/messages", async (req, res) => {
-  const sessionId = req.query.sessionId as string;
-  console.log(`[MESSAGE] Incoming post message for session: ${sessionId}`);
+// Handle message routing - support both /messages and root (/) POST requests
+app.post(["/", "/messages"], async (req, res) => {
+  const sessionId = (req.query.sessionId as string) || (req.body?.sessionId as string);
+  console.log(`[MESSAGE] Incoming post message. Session ID: ${sessionId || "none"}`);
   
-  const activeTransport = transports.get(sessionId);
+  let activeTransport: SSEServerTransport | undefined;
+  
+  if (sessionId) {
+    activeTransport = transports.get(sessionId);
+  } else if (transports.size === 1) {
+    // Fallback: If no sessionId in request, but we only have 1 active session, use it
+    activeTransport = transports.values().next().value;
+    console.log(`[MESSAGE] No sessionId provided, falling back to sole active session: ${activeTransport?.sessionId}`);
+  } else if (transports.size > 1) {
+    // If multiple sessions exist, try to guess or use the most recent one
+    activeTransport = Array.from(transports.values()).pop();
+    console.log(`[MESSAGE] Multiple sessions. Guessing most recent session: ${activeTransport?.sessionId}`);
+  }
+
   if (activeTransport) {
     await activeTransport.handlePostMessage(req, res);
   } else {
-    console.warn(`[MESSAGE] Session not found for ID: ${sessionId}`);
+    console.warn(`[MESSAGE] Session not found for ID: ${sessionId || "none"}. Active sessions: ${transports.size}`);
     res.status(400).send("No active SSE session found");
   }
 });
