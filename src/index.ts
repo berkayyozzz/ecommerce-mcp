@@ -1,5 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -9,6 +9,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { scrapeEtsyProducts } from "./services/etsy.js";
 import { scrapeAlibabaProducts } from "./services/alibaba.js";
+import { randomUUID } from "node:crypto";
 
 dotenv.config();
 
@@ -16,33 +17,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Log all incoming requests
+// Log all incoming requests (shorten headers for readability)
 app.use((req, res, next) => {
-  console.log(`[REQUEST] ${req.method} ${req.url} - Headers: ${JSON.stringify(req.headers)}`);
+  console.log(`[REQUEST] ${req.method} ${req.url}`);
   next();
 });
 
-// Store active transports by sessionId
-const transports = new Map<string, SSEServerTransport>();
-
 // ─────────────────────────────────────────────────────────────────────────────
 // OAuth Discovery Endpoints (required by Claude Web MCP connector)
-// Claude checks these before establishing a real connection.
-// We declare "no auth required" so it proceeds without a login screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// RFC 9728 – OAuth 2.0 Protected Resource Metadata
 app.get("/.well-known/oauth-protected-resource", (req, res) => {
   const baseUrl = `${req.protocol}://${req.get("host")}`;
   console.log("[OAuth] Serving oauth-protected-resource metadata");
   res.json({
     resource: baseUrl,
-    authorization_servers: [],
-    bearer_methods_supported: [],
+    authorization_servers: [`${baseUrl}`],
+    bearer_methods_supported: ["header"],
   });
 });
 
-// RFC 8414 – Authorization Server Metadata
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
   const baseUrl = `${req.protocol}://${req.get("host")}`;
   console.log("[OAuth] Serving oauth-authorization-server metadata");
@@ -54,33 +48,32 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
     code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
   });
 });
 
-// RFC 7591 – Dynamic Client Registration
 app.post("/register", (req, res) => {
-  console.log("[OAuth] Dynamic client registration request received");
-  // Issue a fake client_id so Claude proceeds past registration
+  console.log("[OAuth] Dynamic client registration");
   res.status(201).json({
     client_id: `mcp-client-${Date.now()}`,
-    client_secret: "no-secret",
+    client_secret_expires_at: 0,
     client_id_issued_at: Math.floor(Date.now() / 1000),
     redirect_uris: req.body?.redirect_uris || [],
     grant_types: ["authorization_code"],
     response_types: ["code"],
+    token_endpoint_auth_method: "none",
   });
 });
 
-// Authorize & Token endpoints (not really used, but Claude may probe them)
 app.get("/authorize", (req, res) => {
   const redirectUri = req.query.redirect_uri as string;
   const state = req.query.state as string;
-  const code = "mcp-bypass-code";
+  const code = "mcp-bypass-code-" + randomUUID();
   if (redirectUri) {
     const url = new URL(redirectUri);
     url.searchParams.set("code", code);
     if (state) url.searchParams.set("state", state);
-    console.log(`[OAuth] Redirecting to: ${url.toString()}`);
+    console.log(`[OAuth] /authorize -> redirecting to callback`);
     res.redirect(url.toString());
   } else {
     res.json({ code });
@@ -88,7 +81,7 @@ app.get("/authorize", (req, res) => {
 });
 
 app.post("/token", (req, res) => {
-  console.log("[OAuth] Token exchange request received");
+  console.log("[OAuth] /token exchange");
   res.json({
     access_token: "mcp-no-auth-token",
     token_type: "bearer",
@@ -96,191 +89,165 @@ app.post("/token", (req, res) => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MCP Tool definitions (shared factory so each transport gets its own Server)
+// ─────────────────────────────────────────────────────────────────────────────
 
-app.get(["/", "/sse"], async (req, res) => {
-  res.setHeader("X-Accel-Buffering", "no");
-
-  if (req.method === "HEAD") {
-    console.log(`[HEAD] Responding 200 OK to connection check.`);
-    res.status(200).end();
-    return;
-  }
-
-  console.log(`[SSE] New connection attempt.`);
-
-  // Create a connection-specific Server instance to avoid "Already connected to a transport" errors
-  const connectionServer = new Server(
-    {
-      name: "ecommerce-mcp-server",
-      version: "1.0.0",
-    },
-    {
-      capabilities: {
-        tools: {},
-      },
-    }
+function createMcpServer() {
+  const server = new Server(
+    { name: "ecommerce-mcp-server", version: "1.0.0" },
+    { capabilities: { tools: {} } }
   );
 
-  // Define tools list for this instance
-  connectionServer.setRequestHandler(
-    ListToolsRequestSchema,
-    async () => {
-      return {
-        tools: [
-          {
-            name: "search_etsy_products",
-            description: "Etsy uzerinde kelimeye gore arama yapar, urunlerin fiyatlarini, resimlerini ve linklerini getirir.",
-            inputSchema: {
-              type: "object",
-              properties: {
-                query: {
-                  type: "string",
-                  description: "Etsy'de aranacak anahtar kelime",
-                },
-              },
-              required: ["query"],
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "search_etsy_products",
+        description:
+          "Etsy uzerinde kelimeye gore arama yapar, urunlerin fiyatlarini, resimlerini ve linklerini getirir.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Etsy'de aranacak anahtar kelime",
             },
           },
-          {
-            name: "search_alibaba_products",
-            description: "Alibaba uzerinde toptan urun arar, fiyat araliklarini, MOQ (minimum siparis miktari) bilgilerini, resim ve linkleri getirir.",
-            inputSchema: {
-              type: "object",
-              properties: {
-                query: {
-                  type: "string",
-                  description: "Alibaba'da aranacak anahtar kelime",
-                },
-              },
-              required: ["query"],
+          required: ["query"],
+        },
+      },
+      {
+        name: "search_alibaba_products",
+        description:
+          "Alibaba uzerinde toptan urun arar, fiyat araliklarini, MOQ bilgilerini, resim ve linkleri getirir.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Alibaba'da aranacak anahtar kelime",
             },
+          },
+          required: ["query"],
+        },
+      },
+    ],
+  }));
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+
+    // If API keys are not yet configured, return the placeholder message
+    if (!process.env.ETSY_API_KEY || !process.env.ALIBABA_API_KEY) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Merhaba ben berkay henüz etsy ve alibaba da developer hesabı açıp apileri bağlamadım veriler çok yakında",
           },
         ],
       };
     }
-  );
 
-  // Handle tool executions for this instance
-  connectionServer.setRequestHandler(
-    CallToolRequestSchema,
-    async (request) => {
-      const { name, arguments: args } = request.params;
-      
-      try {
-        if (!process.env.ETSY_API_KEY || !process.env.ALIBABA_API_KEY) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "Merhaba ben berkay henüz etsy ve alibaba da developer hesabı açıp apileri bağlamadım veriler çok yakında",
-              },
-            ],
-          };
-        }
-
-        if (name === "search_etsy_products") {
-          const query = args?.query as string;
-          if (!query) throw new Error("Arama kelimesi gerekli.");
-          const results = await scrapeEtsyProducts(query);
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(results, null, 2),
-              },
-            ],
-          };
-        }
-        
-        if (name === "search_alibaba_products") {
-          const query = args?.query as string;
-          if (!query) throw new Error("Arama kelimesi gerekli.");
-          const results = await scrapeAlibabaProducts(query);
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(results, null, 2),
-              },
-            ],
-          };
-        }
-        
-        throw new Error(`Bilinmeyen arac: ${name}`);
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Hata: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-  );
-
-  const host = req.get("host") || "localhost:3010";
-  const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-  const absoluteMessagesUrl = `${protocol}://${host}/messages`;
-  
-  console.log(`[SSE] Absolute messages endpoint: ${absoluteMessagesUrl}`);
-
-  const connectionTransport = new SSEServerTransport(absoluteMessagesUrl, res);
-  
-  transports.set(connectionTransport.sessionId, connectionTransport);
-  console.log(`[SSE] Session created: ${connectionTransport.sessionId}`);
-
-  // Send a heartbeat comment every 15 seconds to keep the connection alive through Render/Cloudflare proxies
-  const heartbeatInterval = setInterval(() => {
     try {
-      res.write(":\n\n");
-      console.log(`[SSE] Heartbeat sent to session: ${connectionTransport.sessionId}`);
-    } catch (err) {
-      console.error(`[SSE] Failed to send heartbeat: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, 15000);
+      if (name === "search_etsy_products") {
+        const query = args?.query as string;
+        if (!query) throw new Error("Arama kelimesi gerekli.");
+        const results = await scrapeEtsyProducts(query);
+        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+      }
 
-  req.on("close", () => {
-    clearInterval(heartbeatInterval);
-    transports.delete(connectionTransport.sessionId);
-    console.log(`[SSE] Session closed/cleaned: ${connectionTransport.sessionId}`);
+      if (name === "search_alibaba_products") {
+        const query = args?.query as string;
+        if (!query) throw new Error("Arama kelimesi gerekli.");
+        const results = await scrapeAlibabaProducts(query);
+        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+      }
+
+      throw new Error(`Bilinmeyen arac: ${name}`);
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Hata: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   });
 
-  await connectionServer.connect(connectionTransport);
-});
+  return server;
+}
 
-// Handle message routing - support both /messages and root (/) POST requests
-app.post(["/", "/messages"], async (req, res) => {
-  const sessionId = (req.query.sessionId as string) || (req.body?.sessionId as string);
-  console.log(`[MESSAGE] Incoming post message. Session ID: ${sessionId || "none"}`);
-  
-  let activeTransport: SSEServerTransport | undefined;
-  
-  if (sessionId) {
-    activeTransport = transports.get(sessionId);
-  } else if (transports.size === 1) {
-    // Fallback: If no sessionId in request, but we only have 1 active session, use it
-    activeTransport = transports.values().next().value;
-    console.log(`[MESSAGE] No sessionId provided, falling back to sole active session: ${activeTransport?.sessionId}`);
-  } else if (transports.size > 1) {
-    // If multiple sessions exist, try to guess or use the most recent one
-    activeTransport = Array.from(transports.values()).pop();
-    console.log(`[MESSAGE] Multiple sessions. Guessing most recent session: ${activeTransport?.sessionId}`);
+// ─────────────────────────────────────────────────────────────────────────────
+// Streamable HTTP MCP endpoint  (handles GET, POST, DELETE on /mcp and /)
+// Claude Web uses the NEW Streamable HTTP transport (not the deprecated SSE one)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Session store for stateful mode
+const sessions = new Map<
+  string,
+  { transport: StreamableHTTPServerTransport; server: Server }
+>();
+
+async function handleMcpRequest(
+  req: express.Request,
+  res: express.Response
+) {
+  console.log(`[MCP] ${req.method} ${req.url}`);
+
+  // Stateful: re-use existing session if Mcp-Session-Id header is present
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  let session = sessionId ? sessions.get(sessionId) : undefined;
+
+  if (!session) {
+    // New session – create a fresh transport + server pair
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+
+    const server = createMcpServer();
+    await server.connect(transport);
+
+    session = { transport, server };
+
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        sessions.delete(transport.sessionId);
+        console.log(`[MCP] Session closed: ${transport.sessionId}`);
+      }
+    };
+
+    // Store only after we know the session ID (set during first handleRequest)
+    // We attach it after handleRequest returns if a session ID was generated.
   }
 
-  if (activeTransport) {
-    await activeTransport.handlePostMessage(req, res, req.body);
-  } else {
-    console.warn(`[MESSAGE] Session not found for ID: ${sessionId || "none"}. Active sessions: ${transports.size}`);
-    res.status(400).send("No active SSE session found");
+  await session.transport.handleRequest(req, res, req.body);
+
+  // After the first request, the transport will have assigned a session ID.
+  // Register it in our map so subsequent requests can find this session.
+  const assignedId = session.transport.sessionId;
+  if (assignedId && !sessions.has(assignedId)) {
+    sessions.set(assignedId, session);
+    console.log(`[MCP] Session registered: ${assignedId}`);
   }
+}
+
+// Mount MCP handler on both /mcp and / (Claude Web may use either)
+app.all(["/", "/mcp"], (req, res) => {
+  // Skip OAuth endpoints that are already handled above
+  handleMcpRequest(req, res).catch((err) => {
+    console.error("[MCP] Unhandled error:", err);
+    if (!res.headersSent) res.status(500).send("Internal server error");
+  });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3010;
 app.listen(PORT, () => {
   console.log(`==========================================`);
-  console.log(`MCP Server http://localhost:${PORT} uzerinde calisiyor`);
+  console.log(`MCP Server running on port ${PORT}`);
   console.log(`==========================================`);
 });
