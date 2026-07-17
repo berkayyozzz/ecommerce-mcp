@@ -22,9 +22,6 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/", (req, res) => {
-  res.json({ status: "ok", message: "E-Commerce MCP Server is running." });
-});
 
 const server = new Server(
   {
@@ -141,7 +138,8 @@ server.setRequestHandler(
 // We need endpoint for SSE connection
 let transport: SSEServerTransport | null = null;
 
-app.get("/sse", (req, res) => {
+// Map both root (/) and /sse to SSE transport handler
+app.get(["/", "/sse"], (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   transport = new SSEServerTransport("/messages", res);
   server.connect(transport);
