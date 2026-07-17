@@ -150,7 +150,13 @@ app.get(["/", "/sse"], async (req, res) => {
     }
   );
 
-  const connectionTransport = new SSEServerTransport("/messages", res);
+  const host = req.get("host") || "localhost:3010";
+  const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+  const absoluteMessagesUrl = `${protocol}://${host}/messages`;
+  
+  console.log(`[SSE] Absolute messages endpoint: ${absoluteMessagesUrl}`);
+
+  const connectionTransport = new SSEServerTransport(absoluteMessagesUrl, res);
   
   transports.set(connectionTransport.sessionId, connectionTransport);
   console.log(`[SSE] Session created: ${connectionTransport.sessionId}`);
