@@ -29,6 +29,12 @@ const transports = new Map<string, SSEServerTransport>();
 app.get(["/", "/sse"], async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
 
+  if (req.method === "HEAD") {
+    console.log(`[HEAD] Responding 200 OK to connection check.`);
+    res.status(200).end();
+    return;
+  }
+
   console.log(`[SSE] New connection attempt.`);
 
   // Create a connection-specific Server instance to avoid "Already connected to a transport" errors
