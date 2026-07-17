@@ -22,6 +22,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/", (req, res) => {
+  res.json({ status: "ok", message: "E-Commerce MCP Server is running." });
+});
+
 const server = new Server(
   {
     name: "ecommerce-mcp-server",
