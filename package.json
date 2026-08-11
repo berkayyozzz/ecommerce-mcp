@@ -1,6 +1,6 @@
 {
   "name": "ecommerce-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Etsy & Alibaba MCP Server for Claude Web Connectors",
   "main": "dist/index.js",
   "scripts": {
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.1",
+    "@vercel/blob": "^2.8.0",
     "axios": "^1.6.8",
     "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",

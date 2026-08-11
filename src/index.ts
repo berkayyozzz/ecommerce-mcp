@@ -24,13 +24,17 @@ import {
   publishInstagramPost,
   type InstagramPostInput,
 } from "./services/instagram.js";
+import {
+  uploadInstagramMedia,
+  type MediaUploadInput,
+} from "./services/media-upload.js";
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 app.use(express.static("public"));
 
 // Log all incoming requests (shorten headers for readability)
@@ -147,7 +151,7 @@ app.post("/token", (req, res) => {
 
 function createMcpServer() {
   const server = new Server(
-    { name: "ecommerce-mcp-server", version: "1.1.0" },
+    { name: "ecommerce-mcp-server", version: "1.2.0" },
     { capabilities: { tools: {} } },
   );
 
@@ -175,6 +179,25 @@ function createMcpServer() {
         name: "instagram_get_account",
         description: "Bagli Instagram Business/Creator hesabini dogrular. Yayin yapmaz.",
         inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "instagram_upload_media",
+        description:
+          "Instagram icin gorsel veya videoyu Vercel Blob'a yukler ve public HTTPS URL dondurur. Yayin yapmaz. Claude ekindeki medya erisilebilir URL olarak sunulmuyorsa dataUrl/base64Data kullanilabilir.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sourceUrl: { type: "string", format: "uri", description: "Indirilebilir HTTPS medya URL'si" },
+            dataUrl: { type: "string", description: "data:image/...;base64,... biciminde medya" },
+            base64Data: { type: "string", description: "Ham base64 medya verisi" },
+            mimeType: {
+              type: "string",
+              enum: ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime"],
+              description: "base64Data kullanildiginda zorunlu",
+            },
+            fileName: { type: "string", description: "Dosya adi ipucu" },
+          },
+        },
       },
       {
         name: "instagram_preview_post",
@@ -236,6 +259,11 @@ function createMcpServer() {
 
       if (name === "instagram_get_account") {
         const result = await getInstagramAccount();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "instagram_upload_media") {
+        const result = await uploadInstagramMedia(args as unknown as MediaUploadInput);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
@@ -321,13 +349,14 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "ecommerce-mcp",
-    version: "1.1.0",
+    version: "1.2.0",
     configured: {
       connectorAuth: Boolean(process.env.MCP_CONNECTOR_SECRET),
       instagram: Boolean(
         (process.env.META_IG_USER_ID || process.env.INSTAGRAM_ACCOUNT_ID) &&
           (process.env.META_ACCESS_TOKEN || process.env.INSTAGRAM_ACCESS_TOKEN),
       ),
+      mediaUpload: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     },
   });
 });

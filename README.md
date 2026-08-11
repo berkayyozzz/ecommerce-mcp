@@ -11,6 +11,7 @@ Remote MCP server used by Claude through Render.
 ## Instagram tools
 
 - `instagram_get_account`: validates the configured professional account.
+- `instagram_upload_media`: uploads a JPG, PNG, WebP, MP4 or MOV file (maximum 15 MB) to Vercel Blob and returns a public HTTPS URL. It does not publish.
 - `instagram_preview_post`: validates a post and returns a SHA-256 preview hash.
 - `instagram_publish_post`: publishes only when the payload still matches the preview hash and the user supplied the exact approval phrase `SON ONAY: YAYINLA`.
 
@@ -23,6 +24,8 @@ Copy the names from `.env.example`. Never commit their values.
 `MCP_CONNECTOR_SECRET` protects the Claude connector login and must contain at least 24 characters. Adding this security invalidates the old insecure connector token, so reconnect the custom connector in Claude after deployment.
 
 `META_IG_USER_ID` and `META_ACCESS_TOKEN` belong to the Instagram Business/Creator account authorized for content publishing.
+
+`BLOB_READ_WRITE_TOKEN` stores Claude-provided media at a public HTTPS URL before preview and publishing.
 
 ## Local verification
 
