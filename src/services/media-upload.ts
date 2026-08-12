@@ -1,4 +1,5 @@
 import { del, put } from "@vercel/blob";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type MediaUploadInput = {
   sourceUrl?: string;
@@ -33,6 +34,12 @@ const ALLOWED_TYPES = new Set([
   "video/quicktime",
 ]);
 
+type DirectUploadTicket = {
+  mimeType: string;
+  fileName: string;
+  expiresAt: number;
+};
+
 function safeFileName(value: string) {
   return value
     .normalize("NFKD")
@@ -62,6 +69,34 @@ function assertBlobConfigured() {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     throw new Error("BLOB_READ_WRITE_TOKEN MCP ortaminda tanimlanmali.");
   }
+}
+
+function directUploadSecret() {
+  const secret = process.env.MCP_CONNECTOR_SECRET;
+  if (!secret || secret.length < 24) {
+    throw new Error("MCP_CONNECTOR_SECRET dogrudan medya yuklemesi icin gerekli.");
+  }
+  return secret;
+}
+
+function signDirectUploadTicket(payload: DirectUploadTicket) {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", directUploadSecret()).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+function verifyDirectUploadTicket(token: string) {
+  const [encoded, signature] = token.split(".");
+  if (!encoded || !signature) throw new Error("Gecersiz yukleme bileti.");
+  const expected = createHmac("sha256", directUploadSecret()).update(encoded).digest();
+  const provided = Buffer.from(signature, "base64url");
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+    throw new Error("Gecersiz yukleme bileti.");
+  }
+  const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as DirectUploadTicket;
+  if (!payload.expiresAt || payload.expiresAt < Date.now()) throw new Error("Yukleme biletinin suresi dolmus.");
+  if (!ALLOWED_TYPES.has(payload.mimeType)) throw new Error("Gecersiz medya turu.");
+  return payload;
 }
 
 function safeUploadId(value: string) {
@@ -146,6 +181,50 @@ export async function uploadInstagramMedia(input: MediaUploadInput) {
     downloadUrl: blob.downloadUrl,
     mimeType: media.mimeType,
     sizeBytes: media.buffer.length,
+    readyForInstagram: true,
+  };
+}
+
+export function createInstagramDirectUpload(input: { mimeType: string; fileName?: string }, baseUrl: string) {
+  assertBlobConfigured();
+  const mimeType = String(input.mimeType || "").toLowerCase();
+  if (!ALLOWED_TYPES.has(mimeType)) {
+    throw new Error("Yalniz JPG, PNG, WebP, MP4 ve MOV dosyalari yuklenebilir.");
+  }
+  const extension = extensionFor(mimeType);
+  const fileName = safeFileName(input.fileName || `claude-generated-media.${extension}`);
+  const expiresAt = Date.now() + 10 * 60_000;
+  const token = signDirectUploadTicket({ mimeType, fileName, expiresAt });
+  return {
+    ok: true,
+    uploadUrl: `${baseUrl}/media-upload/${encodeURIComponent(token)}`,
+    method: "PUT",
+    headers: { "Content-Type": mimeType },
+    expiresAt: new Date(expiresAt).toISOString(),
+    instructions:
+      "Claude kod calistirma ortaminda dosyanin ham baytlarini bu adrese HTTP PUT ile gonder. Base64 kullanma. Sunucu yanitindaki publicUrl degerini instagram_preview_post icin kullan.",
+  };
+}
+
+export async function receiveInstagramDirectUpload(token: string, body: Buffer, contentType: string) {
+  assertBlobConfigured();
+  const ticket = verifyDirectUploadTicket(token);
+  const mimeType = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (mimeType !== ticket.mimeType) throw new Error("Content-Type yukleme biletiyle eslesmiyor.");
+  assertAllowed(mimeType, body.length);
+  const extension = extensionFor(mimeType);
+  const nameWithoutExtension = ticket.fileName.replace(/\.[a-zA-Z0-9]+$/, "") || "claude-generated-media";
+  const blob = await put(`claude-instagram/${Date.now()}-${nameWithoutExtension}.${extension}`, body, {
+    access: "public",
+    contentType: mimeType,
+    addRandomSuffix: true,
+  });
+  return {
+    ok: true,
+    publicUrl: blob.url,
+    downloadUrl: blob.downloadUrl,
+    mimeType,
+    sizeBytes: body.length,
     readyForInstagram: true,
   };
 }

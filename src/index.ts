@@ -26,6 +26,8 @@ import {
 } from "./services/instagram.js";
 import {
   completeInstagramMediaUpload,
+  createInstagramDirectUpload,
+  receiveInstagramDirectUpload,
   uploadInstagramMedia,
   uploadInstagramMediaChunk,
   type CompleteMediaUploadInput,
@@ -40,6 +42,27 @@ app.use(cors());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: "20mb" }));
 app.use(express.static("public"));
+
+app.put(
+  "/media-upload/:token",
+  express.raw({ type: () => true, limit: "15mb" }),
+  async (req, res) => {
+    try {
+      if (!Buffer.isBuffer(req.body)) throw new Error("Ham medya verisi gerekli.");
+      const result = await receiveInstagramDirectUpload(
+        String(req.params.token || ""),
+        req.body,
+        String(req.headers["content-type"] || ""),
+      );
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({
+        ok: false,
+        error: error instanceof Error ? error.message : "Medya yuklenemedi.",
+      });
+    }
+  },
+);
 
 // Log all incoming requests (shorten headers for readability)
 app.use((req, res, next) => {
@@ -204,6 +227,22 @@ function createMcpServer() {
         },
       },
       {
+        name: "instagram_create_direct_upload",
+        description:
+          "Claude'un kendi urettigi veya kod calistirma konteynerinde bulunan gorsel/video icin 10 dakika gecerli guvenli binary yukleme URL'si olusturur. Claude dosyayi base64'e cevirmeden kendi kod ortamindan HTTP PUT ile uploadUrl adresine gonderir. Yayin yapmaz.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            mimeType: {
+              type: "string",
+              enum: ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime"],
+            },
+            fileName: { type: "string", description: "Claude konteynerindeki dosyanin adi" },
+          },
+          required: ["mimeType"],
+        },
+      },
+      {
         name: "instagram_upload_media_chunk",
         description:
           "Claude sohbetine eklenen buyuk bir medya dosyasini Shopify'a veya kullaniciya yukletmeden, kucuk base64 parcalari halinde Vercel Blob'a yukler. Base64 verisini sirali ve en fazla 750000 karakterlik parcalara bol; her parca icin ayni uploadId kullan. Yayin yapmaz.",
@@ -307,6 +346,15 @@ function createMcpServer() {
 
       if (name === "instagram_upload_media") {
         const result = await uploadInstagramMedia(args as unknown as MediaUploadInput);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "instagram_create_direct_upload") {
+        const baseUrl = String(process.env.PUBLIC_BASE_URL || "https://ecommerce-mcp-jlt3.onrender.com").replace(/\/$/, "");
+        const result = createInstagramDirectUpload(
+          args as unknown as { mimeType: string; fileName?: string },
+          baseUrl,
+        );
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
