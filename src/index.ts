@@ -25,7 +25,11 @@ import {
   type InstagramPostInput,
 } from "./services/instagram.js";
 import {
+  completeInstagramMediaUpload,
   uploadInstagramMedia,
+  uploadInstagramMediaChunk,
+  type CompleteMediaUploadInput,
+  type MediaChunkInput,
   type MediaUploadInput,
 } from "./services/media-upload.js";
 
@@ -200,6 +204,45 @@ function createMcpServer() {
         },
       },
       {
+        name: "instagram_upload_media_chunk",
+        description:
+          "Claude sohbetine eklenen buyuk bir medya dosyasini Shopify'a veya kullaniciya yukletmeden, kucuk base64 parcalari halinde Vercel Blob'a yukler. Base64 verisini sirali ve en fazla 750000 karakterlik parcalara bol; her parca icin ayni uploadId kullan. Yayin yapmaz.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            uploadId: { type: "string", description: "Bu yuklemeye ozel, en az 6 karakterlik kimlik" },
+            chunkIndex: { type: "integer", minimum: 0, description: "0'dan baslayan parca sirasi" },
+            totalChunks: { type: "integer", minimum: 1, maximum: 40 },
+            base64Chunk: { type: "string", description: "En fazla 750000 karakterlik base64 parcasi" },
+          },
+          required: ["uploadId", "chunkIndex", "totalChunks", "base64Chunk"],
+        },
+      },
+      {
+        name: "instagram_complete_media_upload",
+        description:
+          "instagram_upload_media_chunk aracinin dondurdugu chunkUrl degerlerini chunkIndex sirasiyla birlestirir, asil medyayi public HTTPS URL olarak Vercel Blob'a yukler ve gecici parcalari siler. Yayin yapmaz.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            uploadId: { type: "string" },
+            chunkUrls: {
+              type: "array",
+              minItems: 1,
+              maxItems: 40,
+              items: { type: "string", format: "uri" },
+              description: "Parca aracinin cevaplari, chunkIndex sirasinda",
+            },
+            mimeType: {
+              type: "string",
+              enum: ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime"],
+            },
+            fileName: { type: "string" },
+          },
+          required: ["uploadId", "chunkUrls", "mimeType"],
+        },
+      },
+      {
         name: "instagram_preview_post",
         description:
           "Instagram gonderisini yayinlamadan once dogrular ve onizleme hash'i uretir. Yayin yapmaz.",
@@ -264,6 +307,16 @@ function createMcpServer() {
 
       if (name === "instagram_upload_media") {
         const result = await uploadInstagramMedia(args as unknown as MediaUploadInput);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "instagram_upload_media_chunk") {
+        const result = await uploadInstagramMediaChunk(args as unknown as MediaChunkInput);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "instagram_complete_media_upload") {
+        const result = await completeInstagramMediaUpload(args as unknown as CompleteMediaUploadInput);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
