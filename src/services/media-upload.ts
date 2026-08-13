@@ -23,7 +23,8 @@ export type CompleteMediaUploadInput = {
   fileName?: string;
 };
 
-const MAX_BYTES = 15 * 1024 * 1024;
+const MAX_MEDIA_MB = Math.max(1, Number(process.env.INSTAGRAM_MAX_MEDIA_MB || 100));
+const MAX_BYTES = MAX_MEDIA_MB * 1024 * 1024;
 const MAX_CHUNK_BASE64_CHARS = 750_000;
 const MAX_CHUNKS = 40;
 const ALLOWED_TYPES = new Set([
@@ -62,7 +63,7 @@ function assertAllowed(mimeType: string, size: number) {
     throw new Error("Yalniz JPG, PNG, WebP, MP4 ve MOV dosyalari yuklenebilir.");
   }
   if (size <= 0) throw new Error("Medya dosyasi bos.");
-  if (size > MAX_BYTES) throw new Error("Medya dosyasi en fazla 15 MB olabilir.");
+  if (size > MAX_BYTES) throw new Error(`Medya dosyasi en fazla ${MAX_MEDIA_MB} MB olabilir.`);
 }
 
 function assertBlobConfigured() {
@@ -144,7 +145,7 @@ async function downloadSource(sourceUrl: string) {
   const response = await fetch(url, { redirect: "follow" });
   if (!response.ok) throw new Error(`Medya indirilemedi (HTTP ${response.status}).`);
   const length = Number(response.headers.get("content-length") || 0);
-  if (length > MAX_BYTES) throw new Error("Medya dosyasi en fazla 15 MB olabilir.");
+  if (length > MAX_BYTES) throw new Error(`Medya dosyasi en fazla ${MAX_MEDIA_MB} MB olabilir.`);
 
   const mimeType = (response.headers.get("content-type") || "")
     .split(";")[0]
@@ -288,7 +289,9 @@ export async function completeInstagramMediaUpload(input: CompleteMediaUploadInp
     if (!response.ok) throw new Error(`Medya parcasi indirilemedi (HTTP ${response.status}).`);
     const buffer = Buffer.from(await response.arrayBuffer());
     totalBytes += buffer.length;
-    if (totalBytes > MAX_BYTES) throw new Error("Birlesik medya dosyasi en fazla 15 MB olabilir.");
+    if (totalBytes > MAX_BYTES) {
+      throw new Error(`Birlesik medya dosyasi en fazla ${MAX_MEDIA_MB} MB olabilir.`);
+    }
     buffers.push(buffer);
   }
 

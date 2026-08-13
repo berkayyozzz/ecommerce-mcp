@@ -102,7 +102,13 @@ async function publishContainer(creationId: string) {
 }
 
 async function waitForContainer(creationId: string) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const timeoutMs = Math.max(
+    60_000,
+    Number(process.env.INSTAGRAM_VIDEO_PROCESSING_TIMEOUT_MS || 600_000),
+  );
+  const pollIntervalMs = 3_000;
+  const maxAttempts = Math.ceil(timeoutMs / pollIntervalMs);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await graphGet<{ status_code?: string; status?: string }>(creationId, {
       fields: "status_code,status",
     });
@@ -110,7 +116,7 @@ async function waitForContainer(creationId: string) {
     if (result.status_code === "ERROR" || result.status_code === "EXPIRED") {
       throw new Error(result.status || `Instagram container durumu: ${result.status_code}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
   throw new Error("Instagram video hazirligi zaman asimina ugradi.");
 }

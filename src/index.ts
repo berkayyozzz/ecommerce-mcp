@@ -38,6 +38,7 @@ import {
 dotenv.config();
 
 const app = express();
+const instagramMaxMediaMb = Math.max(1, Number(process.env.INSTAGRAM_MAX_MEDIA_MB || 100));
 app.use(cors());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: "20mb" }));
@@ -45,7 +46,7 @@ app.use(express.static("public"));
 
 app.put(
   "/media-upload/:token",
-  express.raw({ type: () => true, limit: "15mb" }),
+  express.raw({ type: () => true, limit: `${instagramMaxMediaMb}mb` }),
   async (req, res) => {
     try {
       if (!Buffer.isBuffer(req.body)) throw new Error("Ham medya verisi gerekli.");
