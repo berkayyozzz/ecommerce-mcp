@@ -9,7 +9,6 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { scrapeEtsyProducts } from "./services/etsy.js";
 import { scrapeAlibabaProducts } from "./services/alibaba.js";
-import { randomUUID } from "node:crypto";
 import {
   createAuthorizationCode,
   escapeHtml,
@@ -485,52 +484,23 @@ function createMcpServer() {
 // Claude Web uses the NEW Streamable HTTP transport (not the deprecated SSE one)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Session store for stateful mode
-const sessions = new Map<
-  string,
-  { transport: StreamableHTTPServerTransport; server: Server }
->();
-
 async function handleMcpRequest(
   req: express.Request,
   res: express.Response
 ) {
   console.log(`[MCP] ${req.method} ${req.url}`);
 
-  // Stateful: re-use existing session if Mcp-Session-Id header is present
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  let session = sessionId ? sessions.get(sessionId) : undefined;
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+  const server = createMcpServer();
 
-  if (!session) {
-    // New session – create a fresh transport + server pair
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-    });
-
-    const server = createMcpServer();
+  try {
     await server.connect(transport);
-
-    session = { transport, server };
-
-    transport.onclose = () => {
-      if (transport.sessionId) {
-        sessions.delete(transport.sessionId);
-        console.log(`[MCP] Session closed: ${transport.sessionId}`);
-      }
-    };
-
-    // Store only after we know the session ID (set during first handleRequest)
-    // We attach it after handleRequest returns if a session ID was generated.
-  }
-
-  await session.transport.handleRequest(req, res, req.body);
-
-  // After the first request, the transport will have assigned a session ID.
-  // Register it in our map so subsequent requests can find this session.
-  const assignedId = session.transport.sessionId;
-  if (assignedId && !sessions.has(assignedId)) {
-    sessions.set(assignedId, session);
-    console.log(`[MCP] Session registered: ${assignedId}`);
+    await transport.handleRequest(req, res, req.body);
+  } finally {
+    await transport.close();
+    await server.close();
   }
 }
 
@@ -538,7 +508,8 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "ecommerce-mcp",
-    version: "1.2.0",
+    version: "1.2.1",
+    mcpMode: "stateless",
     configured: {
       connectorAuth: Boolean(process.env.MCP_CONNECTOR_SECRET),
       instagram: Boolean(
