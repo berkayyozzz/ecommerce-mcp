@@ -34,6 +34,13 @@ import {
   type MediaChunkInput,
   type MediaUploadInput,
 } from "./services/media-upload.js";
+import {
+  cancelInstagramSchedule,
+  executeScheduledInstagramPost,
+  listInstagramSchedules,
+  scheduleInstagramPost,
+  verifySchedulerSecret,
+} from "./services/instagram-scheduler.js";
 
 dotenv.config();
 
@@ -43,6 +50,24 @@ app.use(cors());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: "20mb" }));
 app.use(express.static("public"));
+
+app.post("/api/instagram/scheduled-publish", async (req, res) => {
+  try {
+    const secret = String(req.headers["x-instagram-schedule-secret"] || "");
+    if (!verifySchedulerSecret(secret)) {
+      res.status(401).json({ ok: false, error: "Yetkisiz zamanlama istegi." });
+      return;
+    }
+    const result = await executeScheduledInstagramPost(req.body);
+    res.json(result);
+  } catch (error) {
+    console.error("[Instagram Scheduler]", error);
+    res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Zamanlanmis paylasim basarisiz.",
+    });
+  }
+});
 
 app.put(
   "/media-upload/:token",
@@ -318,6 +343,42 @@ function createMcpServer() {
           required: ["type", "caption", "mediaUrls", "previewHash", "approval"],
         },
       },
+      {
+        name: "instagram_schedule_post",
+        description:
+          "ONEMLI YAZMA ISLEMI: Onizlenmis Instagram gonderisini QStash ile ileri bir tarihe zamanlar. Yalniz kullanici tam olarak 'SON ONAY: ZAMANLA' yazarsa calisir. scheduledAt mutlaka saat dilimli ISO 8601 olmali; Turkiye icin +03:00 kullan.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["image", "carousel", "reel", "story"] },
+            caption: { type: "string" },
+            mediaUrls: { type: "array", items: { type: "string", format: "uri" } },
+            altText: { type: "string" },
+            previewHash: { type: "string" },
+            scheduledAt: {
+              type: "string",
+              description: "Saat dilimli ISO 8601. Ornek: 2026-08-13T20:00:00+03:00",
+            },
+            timezone: { type: "string", default: "Europe/Istanbul" },
+            approval: { type: "string", description: "Kullanicinin birebir zamanlama onayi" },
+          },
+          required: ["type", "caption", "mediaUrls", "previewHash", "scheduledAt", "approval"],
+        },
+      },
+      {
+        name: "instagram_list_scheduled_posts",
+        description: "Instagram icin zamanlanmis, yayinlanmis, iptal veya hata almis paylasimlari listeler. Yayin yapmaz.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "instagram_cancel_scheduled_post",
+        description: "ONEMLI YAZMA ISLEMI: Henuz yayinlanmamis bir Instagram zamanlamasini iptal eder.",
+        inputSchema: {
+          type: "object",
+          properties: { scheduleId: { type: "string" } },
+          required: ["scheduleId"],
+        },
+      },
     ],
   }));
 
@@ -378,6 +439,30 @@ function createMcpServer() {
         const result = await publishInstagramPost(
           args as unknown as InstagramPostInput & { previewHash: string; approval: string },
         );
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "instagram_schedule_post") {
+        const result = await scheduleInstagramPost(
+          args as unknown as InstagramPostInput & {
+            previewHash: string;
+            approval: string;
+            scheduledAt: string;
+            timezone?: string;
+          },
+        );
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "instagram_list_scheduled_posts") {
+        const result = await listInstagramSchedules();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "instagram_cancel_scheduled_post") {
+        const scheduleId = String(args?.scheduleId || "");
+        if (!scheduleId) throw new Error("scheduleId gerekli.");
+        const result = await cancelInstagramSchedule(scheduleId);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
@@ -459,6 +544,10 @@ app.get("/health", (_req, res) => {
           (process.env.META_ACCESS_TOKEN || process.env.INSTAGRAM_ACCESS_TOKEN),
       ),
       mediaUpload: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+      instagramScheduler: Boolean(
+        process.env.QSTASH_TOKEN &&
+          (process.env.INSTAGRAM_SCHEDULER_SECRET || process.env.MCP_CONNECTOR_SECRET),
+      ),
     },
   });
 });
