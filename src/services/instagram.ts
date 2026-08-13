@@ -76,9 +76,26 @@ async function graphGet<T>(path: string, params: Record<string, string>) {
     url.searchParams.set(key, value),
   );
   const response = await fetch(url);
-  const body = (await response.json()) as { error?: { message?: string } } & T;
-  if (!response.ok) throw new Error(body.error?.message || `Meta API HTTP ${response.status}`);
+  const body = (await response.json()) as {
+    error?: { message?: string; type?: string; code?: number; error_subcode?: number; fbtrace_id?: string };
+  } & T;
+  if (!response.ok) throw new Error(formatMetaError(response.status, body.error));
   return body;
+}
+
+function formatMetaError(
+  status: number,
+  error?: { message?: string; type?: string; code?: number; error_subcode?: number; fbtrace_id?: string },
+) {
+  if (!error) return `Meta API HTTP ${status}`;
+  const details = [
+    error.message,
+    error.code !== undefined ? `code=${error.code}` : "",
+    error.error_subcode !== undefined ? `subcode=${error.error_subcode}` : "",
+    error.type ? `type=${error.type}` : "",
+    error.fbtrace_id ? `trace=${error.fbtrace_id}` : "",
+  ].filter(Boolean);
+  return `Meta API HTTP ${status}: ${details.join(" | ")}`;
 }
 
 async function graphPost<T>(path: string, params: Record<string, string>) {
@@ -88,8 +105,10 @@ async function graphPost<T>(path: string, params: Record<string, string>) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ ...params, access_token: accessToken }),
   });
-  const body = (await response.json()) as { error?: { message?: string } } & T;
-  if (!response.ok) throw new Error(body.error?.message || `Meta API HTTP ${response.status}`);
+  const body = (await response.json()) as {
+    error?: { message?: string; type?: string; code?: number; error_subcode?: number; fbtrace_id?: string };
+  } & T;
+  if (!response.ok) throw new Error(formatMetaError(response.status, body.error));
   return body;
 }
 
@@ -118,7 +137,7 @@ async function waitForContainer(creationId: string) {
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
-  throw new Error("Instagram video hazirligi zaman asimina ugradi.");
+  throw new Error("Instagram medya hazirligi zaman asimina ugradi.");
 }
 
 export async function getInstagramAccount() {
@@ -144,6 +163,7 @@ export async function publishInstagramPost(input: InstagramPostInput & {
     const children: string[] = [];
     for (const mediaUrl of preview.mediaUrls) {
       const child = await createContainer({ image_url: mediaUrl, is_carousel_item: "true" });
+      await waitForContainer(child.id);
       children.push(child.id);
     }
     const parent = await createContainer({
@@ -151,6 +171,7 @@ export async function publishInstagramPost(input: InstagramPostInput & {
       children: children.join(","),
       caption: preview.caption,
     });
+    await waitForContainer(parent.id);
     const published = await publishContainer(parent.id);
     return { ok: true, mediaId: published.id, creationId: parent.id, type: preview.type };
   }
@@ -173,7 +194,7 @@ export async function publishInstagramPost(input: InstagramPostInput & {
       media_type: "STORIES",
       ...(isVideo ? { video_url: preview.mediaUrls[0] } : { image_url: preview.mediaUrls[0] }),
     });
-    if (isVideo) await waitForContainer(container.id);
+    await waitForContainer(container.id);
     const published = await publishContainer(container.id);
     return { ok: true, mediaId: published.id, creationId: container.id, type: preview.type };
   }
@@ -183,6 +204,7 @@ export async function publishInstagramPost(input: InstagramPostInput & {
     caption: preview.caption,
     ...(preview.altText ? { alt_text: preview.altText } : {}),
   });
+  await waitForContainer(container.id);
   const published = await publishContainer(container.id);
   return { ok: true, mediaId: published.id, creationId: container.id, type: preview.type };
 }

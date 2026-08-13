@@ -1,5 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { list, put } from "@vercel/blob";
+import { get, list, put } from "@vercel/blob";
 import {
   previewInstagramPost,
   publishInstagramPost,
@@ -12,7 +12,7 @@ const RECORD_PREFIX = "instagram-schedules/";
 export type InstagramScheduleRecord = {
   id: string;
   messageId: string;
-  status: "scheduled" | "cancelled" | "publishing" | "published" | "failed";
+  status: "queueing" | "scheduled" | "cancelled" | "publishing" | "published" | "failed";
   scheduledAt: string;
   scheduledAtUtc: string;
   timezone: string;
@@ -86,10 +86,11 @@ async function allRecords() {
   const records = await Promise.all(
     result.blobs.map(async (blob) => {
       try {
-        const response = await fetch(blob.url, { cache: "no-store" });
-        if (!response.ok) return null;
-        return (await response.json()) as InstagramScheduleRecord;
-      } catch {
+        const result = await get(blob.pathname, { access: "public", useCache: false });
+        if (!result || result.statusCode !== 200) return null;
+        return (await new Response(result.stream).json()) as InstagramScheduleRecord;
+      } catch (error) {
+        console.error("[Instagram Scheduler] Kayit okunamadi", blob.pathname, error);
         return null;
       }
     }),
@@ -129,31 +130,11 @@ export async function scheduleInstagramPost(input: InstagramPostInput & {
     },
     previewHash: preview.previewHash,
   };
-  const destination = `${publicBaseUrl}/api/instagram/scheduled-publish`;
-  const response = await fetch(`${baseUrl}/v2/publish/${destination}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "Upstash-Not-Before": String(Math.floor(scheduledDate.getTime() / 1000)),
-      "Upstash-Retries": "3",
-      "Upstash-Timeout": "600s",
-      "Upstash-Label": `instagram,${id}`,
-      "Upstash-Deduplication-Id": `instagram-${id}`,
-      "Upstash-Forward-X-Instagram-Schedule-Secret": schedulerSecret,
-    },
-    body: JSON.stringify(payload),
-  });
-  const body = (await response.json().catch(() => ({}))) as { messageId?: string; error?: string };
-  if (!response.ok || !body.messageId) {
-    throw new Error(body.error || `QStash HTTP ${response.status}`);
-  }
-
   const now = new Date().toISOString();
   const record: InstagramScheduleRecord = {
     id,
-    messageId: body.messageId,
-    status: "scheduled",
+    messageId: "",
+    status: "queueing",
     scheduledAt: input.scheduledAt,
     scheduledAtUtc: scheduledDate.toISOString(),
     timezone: input.timezone || "Europe/Istanbul",
@@ -162,7 +143,43 @@ export async function scheduleInstagramPost(input: InstagramPostInput & {
     createdAt: now,
     updatedAt: now,
   };
+
+  // Kaydi QStash'e gondermeden once olustur. Boylece yakin tarihli bir
+  // callback, kayit Blob'a yazilmadan once calisip sessizce kaybolamaz.
   await saveRecord(record);
+  const destination = `${publicBaseUrl}/api/instagram/scheduled-publish`;
+  try {
+    const response = await fetch(`${baseUrl}/v2/publish/${destination}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Upstash-Not-Before": String(Math.floor(scheduledDate.getTime() / 1000)),
+        "Upstash-Retries": "3",
+        "Upstash-Timeout": "600s",
+        "Upstash-Label": `instagram,${id}`,
+        "Upstash-Deduplication-Id": `instagram-${id}`,
+        "Upstash-Forward-X-Instagram-Schedule-Secret": schedulerSecret,
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = (await response.json().catch(() => ({}))) as { messageId?: string; error?: string };
+    if (!response.ok || !body.messageId) {
+      throw new Error(body.error || `QStash HTTP ${response.status}`);
+    }
+    record.messageId = body.messageId;
+    record.status = "scheduled";
+    record.updatedAt = new Date().toISOString();
+    await saveRecord(record);
+    console.log(`[Instagram Scheduler] Zamanlandi id=${id} messageId=${body.messageId} utc=${record.scheduledAtUtc}`);
+  } catch (error) {
+    record.status = "failed";
+    record.error = error instanceof Error ? error.message : String(error);
+    record.updatedAt = new Date().toISOString();
+    await saveRecord(record);
+    console.error(`[Instagram Scheduler] QStash kaydi basarisiz id=${id}`, error);
+    throw error;
+  }
   return {
     ok: true,
     schedule: record,
@@ -200,6 +217,7 @@ export async function executeScheduledInstagramPost(payload: ScheduledPayload) {
   record.status = "publishing";
   record.updatedAt = new Date().toISOString();
   await saveRecord(record);
+  console.log(`[Instagram Scheduler] Yayin basliyor id=${record.id} type=${record.post.type}`);
   try {
     const result = await publishInstagramPost({
       ...payload.post,
@@ -211,13 +229,14 @@ export async function executeScheduledInstagramPost(payload: ScheduledPayload) {
     record.updatedAt = new Date().toISOString();
     record.error = undefined;
     await saveRecord(record);
+    console.log(`[Instagram Scheduler] Yayin tamamlandi id=${record.id} mediaId=${result.mediaId}`);
     return result;
   } catch (error) {
     record.status = "failed";
     record.error = error instanceof Error ? error.message : String(error);
     record.updatedAt = new Date().toISOString();
     await saveRecord(record);
+    console.error(`[Instagram Scheduler] Yayin basarisiz id=${record.id}`, error);
     throw error;
   }
 }
-

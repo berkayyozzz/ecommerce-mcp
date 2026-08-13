@@ -52,6 +52,8 @@ app.use(express.json({ limit: "20mb" }));
 app.use(express.static("public"));
 
 app.post("/api/instagram/scheduled-publish", async (req, res) => {
+  const scheduleId = String(req.body?.scheduleId || "unknown");
+  console.log(`[Instagram Scheduler HTTP] Callback alindi id=${scheduleId}`);
   try {
     const secret = String(req.headers["x-instagram-schedule-secret"] || "");
     if (!verifySchedulerSecret(secret)) {
@@ -61,7 +63,7 @@ app.post("/api/instagram/scheduled-publish", async (req, res) => {
     const result = await executeScheduledInstagramPost(req.body);
     res.json(result);
   } catch (error) {
-    console.error("[Instagram Scheduler]", error);
+    console.error(`[Instagram Scheduler HTTP] Callback basarisiz id=${scheduleId}`, error);
     res.status(500).json({
       ok: false,
       error: error instanceof Error ? error.message : "Zamanlanmis paylasim basarisiz.",
