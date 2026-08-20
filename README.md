@@ -17,6 +17,16 @@ Remote MCP server used by Claude through Render.
 
 Supported content types are a single image, an image carousel, a Reel and a Story. Media must be reachable through public HTTPS URLs.
 
+## Amazon UAE profitability tools
+
+- `amazon_uae_profitability_status`: reports whether SP-API and Amazon Ads credentials are configured without returning secret values.
+- `amazon_uae_profitability_start`: starts asynchronous Sales & Traffic, returns, storage-fee and listings reports; discovers completed Flat File V2 settlement reports; optionally starts an Amazon Ads v3 advertised-product report.
+- `amazon_uae_profitability_get`: polls the job and, when ready, returns a paginated AED profitability table by SKU/ASIN.
+
+The profitability response keeps sources separate: settlement rows are actual Amazon charges, Ads v3 is sponsored-product spend, and COGS/miscellaneous costs are caller-supplied AED amounts. Products without manual costs deliberately return `netProceeds: null`.
+
+Required Render variables are documented in `.env.example`. SP-API report generation is asynchronous, so callers should pass the returned `job` object back to the get tool until its status becomes `DONE`.
+
 ## Required Render environment variables
 
 Copy the names from `.env.example`. Never commit their values.

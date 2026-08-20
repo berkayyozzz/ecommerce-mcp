@@ -40,6 +40,13 @@ import {
   scheduleInstagramPost,
   verifySchedulerSecret,
 } from "./services/instagram-scheduler.js";
+import {
+  amazonUaeConfigurationStatus,
+  getAmazonUaeProfitability,
+  startAmazonUaeProfitability,
+  type AmazonCostInput,
+  type AmazonProfitabilityJob,
+} from "./services/amazon.js";
 
 dotenv.config();
 
@@ -205,7 +212,7 @@ app.post("/token", (req, res) => {
 
 function createMcpServer() {
   const server = new Server(
-    { name: "ecommerce-mcp-server", version: "1.2.0" },
+    { name: "ecommerce-mcp-server", version: "1.3.0" },
     { capabilities: { tools: {} } },
   );
 
@@ -227,6 +234,59 @@ function createMcpServer() {
           type: "object",
           properties: { query: { type: "string", description: "Arama kelimesi" } },
           required: ["query"],
+        },
+      },
+      {
+        name: "amazon_uae_profitability_status",
+        description:
+          "Amazon UAE karlilik entegrasyonunun SP-API ve Amazon Ads ayar durumunu kontrol eder. Gizli anahtar degerlerini asla dondurmez.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "amazon_uae_profitability_start",
+        description:
+          "Amazon UAE icin satis, iade, listing, depolama, gerceklesen settlement kesintileri ve istege bagli Sponsored Products raporlarini baslatir. Yayin veya reklam degisikligi yapmaz. Donen job nesnesini daha sonra amazon_uae_profitability_get aracina aynen ver.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            startDate: { type: "string", description: "YYYY-MM-DD; en fazla 90 gunluk aralik" },
+            endDate: { type: "string", description: "YYYY-MM-DD" },
+            includeAds: { type: "boolean", default: true },
+          },
+          required: ["startDate", "endDate"],
+        },
+      },
+      {
+        name: "amazon_uae_profitability_get",
+        description:
+          "Baslatilmis Amazon UAE raporlarini kontrol eder; hazirsa SKU/ASIN bazinda AED satis, iade, referral, FBA, depolama, reklam, manuel COGS/misc ve net kar tablosu uretir. Raporlar hazir degilse PROCESSING dondurur; rakam uydurmaz.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            job: { type: "object", description: "amazon_uae_profitability_start aracinin dondurdugu job nesnesi" },
+            costs: {
+              type: "array",
+              maxItems: 1000,
+              description: "Amazon disi maliyetler. SKU veya ASIN ile eslestirilir; tum tutarlar AED/birim.",
+              items: {
+                type: "object",
+                properties: {
+                  sku: { type: "string" },
+                  asin: { type: "string" },
+                  cogsPerUnit: { type: "number", minimum: 0 },
+                  miscellaneousPerUnit: { type: "number", minimum: 0 },
+                },
+              },
+            },
+            page: { type: "integer", minimum: 1, default: 1 },
+            pageSize: { type: "integer", minimum: 1, maximum: 100, default: 25 },
+            sortBy: {
+              type: "string",
+              enum: ["netProceeds", "sales", "unitsSold", "amazonCharges", "adsSpend"],
+              default: "netProceeds",
+            },
+          },
+          required: ["job"],
         },
       },
       {
@@ -402,6 +462,31 @@ function createMcpServer() {
         return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
       }
 
+      if (name === "amazon_uae_profitability_status") {
+        const result = amazonUaeConfigurationStatus();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "amazon_uae_profitability_start") {
+        const result = await startAmazonUaeProfitability({
+          startDate: String(args?.startDate || ""),
+          endDate: String(args?.endDate || ""),
+          includeAds: args?.includeAds !== false,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      if (name === "amazon_uae_profitability_get") {
+        const result = await getAmazonUaeProfitability({
+          job: args?.job as unknown as AmazonProfitabilityJob,
+          costs: (args?.costs || []) as unknown as AmazonCostInput[],
+          page: Number(args?.page || 1),
+          pageSize: Number(args?.pageSize || 25),
+          sortBy: args?.sortBy as "netProceeds" | "sales" | "unitsSold" | "amazonCharges" | "adsSpend" | undefined,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
       if (name === "instagram_get_account") {
         const result = await getInstagramAccount();
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
@@ -508,7 +593,7 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "ecommerce-mcp",
-    version: "1.2.1",
+    version: "1.3.0",
     mcpMode: "stateless",
     configured: {
       connectorAuth: Boolean(process.env.MCP_CONNECTOR_SECRET),
@@ -521,6 +606,8 @@ app.get("/health", (_req, res) => {
         process.env.QSTASH_TOKEN &&
           (process.env.INSTAGRAM_SCHEDULER_SECRET || process.env.MCP_CONNECTOR_SECRET),
       ),
+      amazonUae: amazonUaeConfigurationStatus().spApiConfigured,
+      amazonAdsUae: amazonUaeConfigurationStatus().adsConfigured,
     },
   });
 });
