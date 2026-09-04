@@ -16,13 +16,17 @@ test('OAuth session, password, state, scope validation and single-use callback',
  };
  try {
   const start=await fetch(base+'/pinterest/connect');assert.equal(start.status,200);assert.equal(start.headers.get('cache-control'),'no-store');
+  assert.equal(start.headers.get('referrer-policy'),'same-origin');
+  assert.match(start.headers.get('content-security-policy'),/form-action 'self' https:\/\/www\.pinterest\.com;/);
   const cookie=start.headers.get('set-cookie').split(';')[0];const nonce=cookie.split('=')[1];
   const input={nonce,password:process.env.MCP_CONNECTOR_SECRET};
+  const nullOrigin=await fetch(base+'/pinterest/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded',Cookie:cookie,Origin:'null'},body:new URLSearchParams(input)});assert.equal(nullOrigin.status,403);
   const bad=await fetch(base+'/pinterest/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded',Cookie:cookie,Origin:'https://evil.example'},body:new URLSearchParams(input)});assert.equal(bad.status,403);
   const login=await fetch(base+'/pinterest/connect',{method:'POST',redirect:'manual',headers:{'Content-Type':'application/x-www-form-urlencoded',Cookie:cookie,Origin:'https://example.com'},body:new URLSearchParams(input)});
   assert.equal(login.status,303);assert.equal(new URL(login.headers.get('location')).searchParams.get('state'),nonce);
   const wrong=await fetch(base+'/pinterest/callback?state=wrong&code=test',{headers:{Cookie:cookie}});assert.equal(wrong.status,403);assert.equal(exchanges,0);
   const callback=await fetch(base+`/pinterest/callback?state=${nonce}&code=test`,{headers:{Cookie:cookie}});assert.equal(callback.status,200);assert.match(await callback.text(),/PINTEREST_ACCESS_TOKEN/);assert.equal(exchanges,1);
+  assert.equal(callback.headers.get('referrer-policy'),'no-referrer');
   const replay=await fetch(base+`/pinterest/callback?state=${nonce}&code=test`,{headers:{Cookie:cookie}});assert.equal(replay.status,403);assert.equal(exchanges,1);
  } finally {globalThis.fetch=original;server.close();keys.forEach((k,i)=>previous[i]===undefined?delete process.env[k]:process.env[k]=previous[i]);}
 });

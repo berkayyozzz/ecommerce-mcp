@@ -35,6 +35,10 @@ pinterestOAuthRouter.use((_req, res, next) => {
 pinterestOAuthRouter.get("/connect", (_req, res) => {
   try {
     settings();
+    // Native form POSTs use Origin: null under no-referrer. Keep the
+    // callback private, but allow the login form's strict Origin check.
+    res.set("Referrer-Policy", "same-origin");
+    res.set("Content-Security-Policy", "default-src 'none'; form-action 'self' https://www.pinterest.com; frame-ancestors 'none'; base-uri 'none'");
     for (const [k, s] of sessions) if (s.expires < Date.now()) sessions.delete(k);
     if (sessions.size >= 100) return page(res, "Kurulum yogun. Biraz sonra tekrar deneyin.", 429);
     const nonce = randomBytes(32).toString("hex");
