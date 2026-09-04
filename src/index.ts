@@ -7,6 +7,8 @@ import {
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { pinterestOAuthRouter } from "./pinterest-oauth.js";
+import { pinterestTools, getPinterestAccount, listPinterestBoards, previewPinterestPin, publishPinterestPin, type PinInput } from "./services/pinterest.js";
 import { scrapeEtsyProducts } from "./services/etsy.js";
 import { scrapeAlibabaProducts } from "./services/alibaba.js";
 import {
@@ -56,6 +58,8 @@ app.use(cors());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: "20mb" }));
 app.use(express.static("public"));
+// Mount before request URL logging: callback query contains a sensitive OAuth code.
+app.use("/pinterest", pinterestOAuthRouter);
 
 app.post("/api/instagram/scheduled-publish", async (req, res) => {
   const scheduleId = String(req.body?.scheduleId || "unknown");
@@ -218,6 +222,7 @@ function createMcpServer() {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
+      ...pinterestTools,
       {
         name: "search_etsy_products",
         description: "Etsy uzerinde urun arar.",
@@ -492,6 +497,16 @@ function createMcpServer() {
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
+      if (name.startsWith("pinterest_")) {
+        let result: unknown;
+        if (name === "pinterest_get_account") result = await getPinterestAccount();
+        else if (name === "pinterest_list_boards") result = await listPinterestBoards(args?.bookmark as string | undefined);
+        else if (name === "pinterest_preview_pin") result = await previewPinterestPin(args as unknown as PinInput);
+        else if (name === "pinterest_publish_pin") result = await publishPinterestPin(args as unknown as PinInput & { approval: string; previewHash: string });
+        else throw new Error("Bilinmeyen Pinterest araci.");
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
       if (name === "instagram_upload_media") {
         const result = await uploadInstagramMedia(args as unknown as MediaUploadInput);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
@@ -597,6 +612,7 @@ app.get("/health", (_req, res) => {
     mcpMode: "stateless",
     configured: {
       connectorAuth: Boolean(process.env.MCP_CONNECTOR_SECRET),
+      pinterest: Boolean(process.env.PINTEREST_ACCESS_TOKEN),
       instagram: Boolean(
         (process.env.META_IG_USER_ID || process.env.INSTAGRAM_ACCOUNT_ID) &&
           (process.env.META_ACCESS_TOKEN || process.env.INSTAGRAM_ACCESS_TOKEN),
