@@ -2,7 +2,7 @@ import express from "express";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { escapeHtml, verifyConnectorPassword } from "./oauth.js";
 
-const scopes = ["boards:read", "pins:read", "pins:write", "user_accounts:read"];
+const scopes = ["boards:read", "boards:write", "pins:read", "pins:write", "user_accounts:read"];
 const sessions = new Map<string, { expires: number; phase: "login" | "oauth"; attempts: number }>();
 const cookieName = "__Host-pinterest-setup";
 

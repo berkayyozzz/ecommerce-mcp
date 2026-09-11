@@ -5,7 +5,7 @@
 ## Yetkilendirme
 
 - Uygulama gizli anahtarı erişim tokenı değildir. Ekran görüntüsünde ifşa olmuş anahtarı Pinterest panelinden yenileyin; kod veya sohbet içinde paylaşmayın.
-- Paneldeki yalnızca `read` kapsamlı test tokenı yayın için yeterli değildir. Pinterest OAuth ile `pins:write`, `pins:read`, `boards:read` ve hesap kontrolü için `user_accounts:read` kapsamlarını yetkilendirin. Uygulamanın erişim seviyesi/izinleri Pinterest'ten doğrulanmalıdır. Pano oluşturma bu sürümde olmadığı için boards:write aracı yoktur; Pinterest yetkilendirme akışındaki güncel kapsam gerekliliklerini kontrol edin.
+- Paneldeki yalnızca `read` kapsamlı test tokenı yayın için yeterli değildir. Pinterest OAuth ile `pins:write`, `pins:read`, `boards:read`, `boards:write` ve hesap kontrolü için `user_accounts:read` kapsamlarını yetkilendirin. Pinterest Pin oluşturma uç noktası mevcut panoya yazarken de `boards:write` isteyebilir; MCP pano oluşturma aracı sunmasa da bu kapsam yayın için gereklidir.
 - Pinterest OAuth kurulumu `/pinterest/connect` ve `/pinterest/callback` üzerinden yapılır. Mevcut MCP şifresiyle korunan kurulumda tek kullanımlık, tarayıcı çerezine bağlı state kontrolü vardır. Otomatik refresh yoktur; süresi dolmadan token yenilenmelidir. Mevcut Claude connector OAuth'u Pinterest OAuth'undan ayrıdır.
 - Render Environment: `PINTEREST_ACCESS_TOKEN` yetkili token; `PINTEREST_SANDBOX=false` gerçek API içindir. Sandbox tokenı ile `true` kullanın; bunu gerçek yayın doğrulaması saymayın.
 - Kodun Render'a deploy edilmesi gerekir. `/health` içindeki pinterest=true yalnızca tokenın tanımlı olduğunu gösterir; izin veya yayın testi değildir.
