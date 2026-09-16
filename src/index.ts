@@ -49,6 +49,16 @@ import {
   type AmazonCostInput,
   type AmazonProfitabilityJob,
 } from "./services/amazon.js";
+import {
+  sheetsTools,
+  getCurrentCost,
+  getCostHistory,
+  addCost,
+  getCurrentStock,
+  getStockHistory,
+  addStock,
+  listCurrentValues,
+} from "./services/sheets.js";
 
 dotenv.config();
 
@@ -223,6 +233,7 @@ function createMcpServer() {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...pinterestTools,
+      ...sheetsTools,
       {
         name: "search_etsy_products",
         description: "Etsy uzerinde urun arar.",
@@ -564,6 +575,51 @@ function createMcpServer() {
         const scheduleId = String(args?.scheduleId || "");
         if (!scheduleId) throw new Error("scheduleId gerekli.");
         const result = await cancelInstagramSchedule(scheduleId);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+
+      // --- Sheets Tools ---
+      if (name === "get_current_cost") {
+        const result = await getCurrentCost(String(args?.asin || ""));
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "get_cost_history") {
+        const result = await getCostHistory(String(args?.asin || ""));
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "add_cost") {
+        const result = await addCost(
+          String(args?.asin || ""),
+          String(args?.product_name || ""),
+          Number(args?.cost || 0),
+          args?.en !== undefined ? Number(args?.en) : undefined,
+          args?.boy !== undefined ? Number(args?.boy) : undefined,
+          args?.yukseklik !== undefined ? Number(args?.yukseklik) : undefined,
+          args?.agirlik !== undefined ? Number(args?.agirlik) : undefined,
+          args?.paket_durumu ? String(args?.paket_durumu) : undefined,
+          args?.notes ? String(args?.notes) : ""
+        );
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "get_current_stock") {
+        const result = await getCurrentStock(String(args?.asin || ""));
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "get_stock_history") {
+        const result = await getStockHistory(String(args?.asin || ""));
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "add_stock") {
+        const result = await addStock(
+          String(args?.asin || ""),
+          String(args?.product_name || ""),
+          Number(args?.stock || 0),
+          args?.notes ? String(args?.notes) : ""
+        );
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "list_current_values") {
+        const result = await listCurrentValues();
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
