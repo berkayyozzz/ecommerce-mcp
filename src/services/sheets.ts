@@ -209,16 +209,39 @@ function normalizedAsin(value: unknown): string {
   return asin;
 }
 
+export function formatSheetTimestamp(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Istanbul",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+
+  return `${part("month")}/${part("day")}/${part("year")} ${part("hour")}:${part("minute")}:${part("second")}`;
+}
+
 function currentTimestamp(): string {
-  return new Date().toLocaleString("tr-TR", { timeZone: "Europe/Istanbul" });
+  return formatSheetTimestamp(new Date());
 }
 
 export function sheetDateKey(value: unknown): string | null {
   const text = String(value ?? "").trim();
   const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
-  const dayFirst = text.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})/);
-  if (dayFirst) return `${dayFirst[3]}-${dayFirst[2].padStart(2, "0")}-${dayFirst[1].padStart(2, "0")}`;
+  const dottedDayFirst = text.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (dottedDayFirst) {
+    return `${dottedDayFirst[3]}-${dottedDayFirst[2].padStart(2, "0")}-${dottedDayFirst[1].padStart(2, "0")}`;
+  }
+  const slashedMonthFirst = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slashedMonthFirst) {
+    return `${slashedMonthFirst[3]}-${slashedMonthFirst[1].padStart(2, "0")}-${slashedMonthFirst[2].padStart(2, "0")}`;
+  }
   return null;
 }
 

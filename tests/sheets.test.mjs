@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  formatSheetTimestamp,
   normalizeSheetHeader,
   resolveHeaderIndexes,
   sheetDateKey,
@@ -30,8 +31,13 @@ test("fails when a required header is missing", () => {
 
 test("normalizes supported sheet dates for inclusive filtering", () => {
   assert.equal(sheetDateKey("23.09.2026 15:21:55"), "2026-09-23");
+  assert.equal(sheetDateKey("9/23/2026 15:21:55"), "2026-09-23");
   assert.equal(sheetDateKey("2026-09-03T10:00:00Z"), "2026-09-03");
   assert.equal(sheetDateKey(""), null);
+});
+
+test("formats MCP timestamps like Google Form timestamps", () => {
+  assert.equal(formatSheetTimestamp(new Date("2026-09-23T12:24:16Z")), "9/23/2026 15:24:16");
 });
 
 test("registers all requested Sheets tools", () => {
