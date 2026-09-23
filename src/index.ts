@@ -58,6 +58,18 @@ import {
   getStockHistory,
   addStock,
   listCurrentValues,
+  listAllCosts,
+  listAllStocks,
+  updateCurrentValues,
+  addCostBulk,
+  addStockBulk,
+  findProducts,
+  cloneCost,
+  getMissingFields,
+  findDuplicates,
+  markRowDeleted,
+  type CostInput,
+  type StockInput,
 } from "./services/sheets.js";
 
 dotenv.config();
@@ -620,6 +632,83 @@ function createMcpServer() {
       }
       if (name === "list_current_values") {
         const result = await listCurrentValues();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "list_all_costs") {
+        const result = await listAllCosts({
+          asinPrefix: args?.asin_prefix ? String(args.asin_prefix) : undefined,
+          dateFrom: args?.date_from ? String(args.date_from) : undefined,
+          dateTo: args?.date_to ? String(args.date_to) : undefined,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "list_all_stocks") {
+        const result = await listAllStocks({
+          asinPrefix: args?.asin_prefix ? String(args.asin_prefix) : undefined,
+          dateFrom: args?.date_from ? String(args.date_from) : undefined,
+          dateTo: args?.date_to ? String(args.date_to) : undefined,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "update_current_values") {
+        const result = await updateCurrentValues();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "add_cost_bulk") {
+        const inputRecords = Array.isArray(args?.records)
+          ? args.records as Array<Record<string, unknown>>
+          : [];
+        const records: CostInput[] = inputRecords.map((record) => ({
+          asin: String(record.asin || ""),
+          productName: record.product_name ? String(record.product_name) : undefined,
+          cost: Number(record.cost),
+          en: record.en === undefined ? undefined : Number(record.en),
+          boy: record.boy === undefined ? undefined : Number(record.boy),
+          yukseklik: record.yukseklik === undefined ? undefined : Number(record.yukseklik),
+          agirlik: record.agirlik === undefined ? undefined : Number(record.agirlik),
+          paketDurumu: record.paket_durumu ? String(record.paket_durumu) : undefined,
+        }));
+        const result = await addCostBulk(records);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "add_stock_bulk") {
+        const inputRecords = Array.isArray(args?.records)
+          ? args.records as Array<Record<string, unknown>>
+          : [];
+        const records: StockInput[] = inputRecords.map((record) => ({
+          asin: String(record.asin || ""),
+          productName: record.product_name ? String(record.product_name) : undefined,
+          stock: Number(record.stock),
+          notes: record.notes ? String(record.notes) : undefined,
+        }));
+        const result = await addStockBulk(records);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "find_products") {
+        const result = await findProducts(String(args?.query || ""));
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "clone_cost") {
+        const targetAsins = Array.isArray(args?.target_asins)
+          ? args.target_asins.map((value) => String(value))
+          : [];
+        const result = await cloneCost(String(args?.source_asin || ""), targetAsins);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "get_missing_fields") {
+        const result = await getMissingFields();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "find_duplicates") {
+        const result = await findDuplicates();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "mark_row_deleted") {
+        const result = await markRowDeleted(
+          String(args?.sheet || "") as "cost" | "stock",
+          Number(args?.row_number),
+          String(args?.asin || ""),
+        );
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
