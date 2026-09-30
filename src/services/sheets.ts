@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { JWT } from "google-auth-library";
+import crypto from "node:crypto";
 
 type SheetRow = Array<string | number | boolean | null | undefined>;
 type HeaderDefinitions = Record<string, readonly string[]>;
@@ -28,6 +29,10 @@ export type StockInput = {
   stock: number;
   notes?: string;
 };
+
+type PendingWrite = { type: "cost"; record: CostInput } | { type: "stock"; record: StockInput };
+const pendingWrites = new Map<string, PendingWrite & { expiresAt: number }>();
+const CONFIRMATION_TTL_MS = 15 * 60 * 1000;
 
 const PRODUCT_COSTS_SHEET = "Product Costs";
 const PRODUCT_COSTS_RANGE = "'Product Costs'!A:Q";
@@ -277,6 +282,49 @@ function latestByAsin<T extends { asin: unknown }>(rows: T[]): Map<string, T> {
   return latest;
 }
 
+function isMarkedDeleted(row: { notes?: unknown }): boolean {
+  return normalizeSheetHeader(row.notes).includes("silinecek");
+}
+
+function validRows<T extends { notes?: unknown }>(rows: T[]): T[] {
+  return rows.filter((row) => !isMarkedDeleted(row));
+}
+
+function numeric(value: unknown): number | null {
+  if (value === "" || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function levenshteinRatio(left: unknown, right: unknown): number {
+  const a = normalizeProductText(left); const b = normalizeProductText(right);
+  if (!a && !b) return 1;
+  if (!a || !b) return 0;
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    previous.splice(0, previous.length, ...current);
+  }
+  return 1 - previous[b.length] / Math.max(a.length, b.length);
+}
+
+function createConfirmation(write: PendingWrite) {
+  const confirmToken = crypto.randomBytes(24).toString("hex");
+  const expiresAt = Date.now() + CONFIRMATION_TTL_MS;
+  pendingWrites.set(confirmToken, { ...write, expiresAt });
+  return { confirmToken, expiresAt: new Date(expiresAt).toISOString() };
+}
+
+function consumeConfirmation(confirmToken: string, type: PendingWrite["type"], asin: string): PendingWrite {
+  const pending = pendingWrites.get(confirmToken);
+  pendingWrites.delete(confirmToken);
+  if (!pending || pending.expiresAt <= Date.now() || pending.type !== type || normalizedAsin(pending.record.asin) !== normalizedAsin(asin)) {
+    throw new Error("Onay tokeni eksik, suresi dolmus, kullanilmis veya ASIN ile eslesmiyor. Islemi yeniden hazirlayin.");
+  }
+  return pending;
+}
+
 function mapCostRow(row: SheetRow, indexes: HeaderIndexes<typeof costHeaders>, rowNumber?: number) {
   return {
     ...(rowNumber === undefined ? {} : { rowNumber }),
@@ -304,7 +352,7 @@ export async function getCostHistory(asin: string) {
 }
 
 export async function getCurrentCost(asin: string) {
-  const history = await getCostHistory(asin);
+  const history = validRows(await getCostHistory(asin));
   return history.length === 0 ? null : history[history.length - 1];
 }
 
@@ -326,7 +374,7 @@ async function appendCosts(records: CostInput[]) {
   if (records.length === 0) throw new Error("En az bir maliyet kaydi gerekli.");
   if (records.length > 500) throw new Error("Tek cagrida en fazla 500 maliyet kaydi eklenebilir.");
   const { sheets, spreadsheetId, indexes, dataRows } = await readCostTable();
-  const currentRecords = latestByAsin(dataRows.map((row) => mapCostRow(row, indexes)));
+  const currentRecords = latestByAsin(validRows(dataRows.map((row) => mapCostRow(row, indexes))));
   const timestamp = currentTimestamp();
   const normalizedRecords: CostInput[] = [];
   const values = records.map((record) => {
@@ -378,14 +426,44 @@ async function appendCosts(records: CostInput[]) {
 
 export async function addCost(
   asin: string, productName: string, cost: number, en?: number, boy?: number,
-  yukseklik?: number, agirlik?: number, paketDurumu?: string, _notes: string = "",
+  yukseklik?: number, agirlik?: number, paketDurumu?: string, _notes: string = "", confirmToken?: string,
 ) {
-  const [record] = await appendCosts([{ asin, productName, cost, en, boy, yukseklik, agirlik, paketDurumu }]);
+  const normalized = normalizedAsin(asin);
+  if (confirmToken) {
+    const pending = consumeConfirmation(confirmToken, "cost", normalized);
+    const [record] = await appendCosts([(pending as Extract<PendingWrite, { type: "cost" }>).record]);
+    return { success: true, status: "confirmed", message: `Maliyet onayla eklendi: ${record.asin} - $${record.cost}` };
+  }
+  const existing = await getCurrentCost(normalized);
+  const incoming: CostInput = { asin: normalized, productName, cost, en, boy, yukseklik, agirlik, paketDurumu };
+  const warnings: string[] = [];
+  if (cost === 0) warnings.push(`UYARI: ${normalized} icin maliyet ${existing?.cost ?? "kayitsiz"} → 0 olarak giriliyor. Gercekten sifir mi, yoksa henuz bilinmiyor mu? Bilinmiyorsa bos birakin, 0 yazmayin.`);
+  const oldCost = numeric(existing?.cost);
+  if (existing && oldCost !== null && oldCost !== 0 && Math.abs(cost - oldCost) / Math.abs(oldCost) > 0.5) warnings.push(`UYARI: ${normalized} maliyeti %50'den fazla degisiyor: ${oldCost} → ${cost}.`);
+  if (existing && productName && existing.productName && levenshteinRatio(existing.productName, productName) < 0.5) warnings.push(`UYARI: ${normalized} kayitli adi '${existing.productName}', gelen ad '${productName}'. Yanlis ASIN'e giris yapiyor olabilirsiniz.`);
+  const oldWeight = numeric(existing?.agirlik);
+  if (existing && agirlik !== undefined && oldWeight !== null && oldWeight !== 0 && Math.abs(agirlik - oldWeight) / Math.abs(oldWeight) > 0.2) warnings.push(`UYARI: ${normalized} agirligi %20'den fazla degisiyor: ${oldWeight} kg → ${agirlik} kg.`);
+  const different = Boolean(existing) && [cost !== oldCost, productName && productName !== String(existing?.productName || ""), en !== undefined && en !== numeric(existing?.en), boy !== undefined && boy !== numeric(existing?.boy), yukseklik !== undefined && yukseklik !== numeric(existing?.yukseklik), agirlik !== undefined && agirlik !== oldWeight, paketDurumu && paketDurumu !== String(existing?.paketDurumu || "")].some(Boolean);
+  if ((existing && different) || cost === 0) {
+    const confirmation = createConfirmation({ type: "cost", record: incoming });
+    return { status: "confirmation_required", asin: normalized, existing: existing ? { cost: existing.cost, productName: existing.productName, timestamp: existing.timestamp, rowNumber: existing.rowNumber, agirlik: existing.agirlik } : null, incoming: { cost, productName, agirlik }, warnings, ...confirmation };
+  }
+  if (existing && !different) return { success: true, status: "unchanged", asin: normalized, message: "Ayni deger zaten kayitli; yeni satir eklenmedi." };
+  const [record] = await appendCosts([incoming]);
   return { success: true, message: `Maliyet basariyla eklendi: ${record.asin} - $${record.cost}` };
 }
 
 export async function addCostBulk(records: CostInput[]) {
-  const added = await appendCosts(records);
+  const { indexes, dataRows } = await readCostTable();
+  const current = latestByAsin(validRows(dataRows.map((row) => mapCostRow(row, indexes))));
+  const conflicts = records.filter((record) => {
+    const previous = current.get(normalizedAsin(record.asin));
+    return record.cost === 0 || (previous && (record.cost !== numeric(previous.cost) || Boolean(record.productName && record.productName !== String(previous.productName || ""))));
+  }).map((record) => normalizedAsin(record.asin));
+  if (conflicts.length) throw new Error(`Toplu yazma guvenlik nedeniyle durduruldu. Sifir veya mevcut kayittan farkli ASIN'leri add_cost ile tek tek onaylayin: ${[...new Set(conflicts)].join(", ")}`);
+  const pending = records.filter((record) => !current.has(normalizedAsin(record.asin)));
+  if (!pending.length) return { success: true, addedCount: 0, asins: [], status: "unchanged" };
+  const added = await appendCosts(pending);
   return { success: true, addedCount: added.length, asins: added.map((record) => record.asin) };
 }
 
@@ -423,7 +501,7 @@ export async function getStockHistory(asin: string) {
 }
 
 export async function getCurrentStock(asin: string) {
-  const history = await getStockHistory(asin);
+  const history = validRows(await getStockHistory(asin));
   return history.length === 0 ? null : history[history.length - 1];
 }
 
@@ -445,7 +523,7 @@ async function appendStocks(records: StockInput[]) {
   if (records.length === 0) throw new Error("En az bir stok kaydi gerekli.");
   if (records.length > 500) throw new Error("Tek cagrida en fazla 500 stok kaydi eklenebilir.");
   const { sheets, spreadsheetId, headers, indexes, dataRows, range } = await readStockTable();
-  const currentRecords = latestByAsin(dataRows.map((row) => mapStockRow(row, indexes)));
+  const currentRecords = latestByAsin(validRows(dataRows.map((row) => mapStockRow(row, indexes))));
   const timestamp = currentTimestamp();
   const normalizedRecords: StockInput[] = [];
   const values = records.map((record) => {
@@ -486,13 +564,38 @@ async function appendStocks(records: StockInput[]) {
   return normalizedRecords;
 }
 
-export async function addStock(asin: string, productName: string, stock: number, notes: string = "") {
-  const [record] = await appendStocks([{ asin, productName, stock, notes }]);
+export async function addStock(asin: string, productName: string, stock: number, notes: string = "", confirmToken?: string) {
+  const normalized = normalizedAsin(asin);
+  if (confirmToken) {
+    const pending = consumeConfirmation(confirmToken, "stock", normalized);
+    const [record] = await appendStocks([(pending as Extract<PendingWrite, { type: "stock" }>).record]);
+    return { success: true, status: "confirmed", message: `Stok onayla eklendi: ${record.asin} - ${record.stock}` };
+  }
+  const existing = await getCurrentStock(normalized);
+  const incoming: StockInput = { asin: normalized, productName, stock, notes };
+  const warnings: string[] = [];
+  if (existing && productName && existing.productName && levenshteinRatio(existing.productName, productName) < 0.5) warnings.push(`UYARI: ${normalized} kayitli adi '${existing.productName}', gelen ad '${productName}'. Yanlis ASIN'e giris yapiyor olabilirsiniz.`);
+  const different = Boolean(existing) && (stock !== numeric(existing?.stock) || Boolean(productName && productName !== String(existing?.productName || "")));
+  if (existing && different) {
+    const confirmation = createConfirmation({ type: "stock", record: incoming });
+    return { status: "confirmation_required", asin: normalized, existing: { stock: existing.stock, productName: existing.productName, timestamp: existing.timestamp, rowNumber: existing.rowNumber }, incoming: { stock, productName }, warnings, ...confirmation };
+  }
+  if (existing && !different) return { success: true, status: "unchanged", asin: normalized, message: "Ayni deger zaten kayitli; yeni satir eklenmedi." };
+  const [record] = await appendStocks([incoming]);
   return { success: true, message: `Stok basariyla eklendi: ${record.asin} - ${record.stock}` };
 }
 
 export async function addStockBulk(records: StockInput[]) {
-  const added = await appendStocks(records);
+  const { indexes, dataRows } = await readStockTable();
+  const current = latestByAsin(validRows(dataRows.map((row) => mapStockRow(row, indexes))));
+  const conflicts = records.filter((record) => {
+    const previous = current.get(normalizedAsin(record.asin));
+    return previous && (record.stock !== numeric(previous.stock) || Boolean(record.productName && record.productName !== String(previous.productName || "")));
+  }).map((record) => normalizedAsin(record.asin));
+  if (conflicts.length) throw new Error(`Toplu yazma guvenlik nedeniyle durduruldu. Mevcut kayittan farkli ASIN'leri add_stock ile tek tek onaylayin: ${[...new Set(conflicts)].join(", ")}`);
+  const pending = records.filter((record) => !current.has(normalizedAsin(record.asin)));
+  if (!pending.length) return { success: true, addedCount: 0, asins: [], status: "unchanged" };
+  const added = await appendStocks(pending);
   return { success: true, addedCount: added.length, asins: added.map((record) => record.asin) };
 }
 
@@ -535,10 +638,10 @@ export async function updateCurrentValues() {
     readCurrentValuesTable(),
   ]);
   const latestCosts = latestByAsin(
-    costTable.dataRows.map((row, index) => mapCostRow(row, costTable.indexes, index + 2)),
+    validRows(costTable.dataRows.map((row, index) => mapCostRow(row, costTable.indexes, index + 2))),
   );
   const latestStocks = latestByAsin(
-    stockTable.dataRows.map((row, index) => mapStockRow(row, stockTable.indexes, index + 2)),
+    validRows(stockTable.dataRows.map((row, index) => mapStockRow(row, stockTable.indexes, index + 2))),
   );
   const existingRows = new Map<string, number>();
   for (const [index, row] of currentTable.dataRows.entries()) {
@@ -664,7 +767,7 @@ export async function cloneCost(sourceAsin: string, targetAsins: string[]) {
 
 export async function getMissingFields() {
   const { indexes, dataRows } = await readCostTable();
-  const latest = latestByAsin(dataRows.map((row, index) => mapCostRow(row, indexes, index + 2)));
+  const latest = latestByAsin(validRows(dataRows.map((row, index) => mapCostRow(row, indexes, index + 2))));
   const rows = [...latest.values()].map((row) => {
     const missingFields: string[] = [];
     if (!String(row.productName ?? "").trim()) missingFields.push("productName");
@@ -717,6 +820,47 @@ export async function findDuplicates() {
   };
 }
 
+export async function auditCostEntries() {
+  const { indexes, dataRows } = await readCostTable();
+  const allRows = dataRows.map((row, index) => mapCostRow(row, indexes, index + 2)).filter((row) => String(row.asin).trim());
+  const rows = validRows(allRows);
+  const historyByAsin = new Map<string, typeof rows>();
+  const namesByAsin = new Map<string, Map<string, { productName: string; rowNumbers: number[] }>>();
+  const asinsByName = new Map<string, Map<string, number[]>>();
+  for (const row of rows) {
+    const asin = String(row.asin).trim().toUpperCase();
+    const history = historyByAsin.get(asin) || []; history.push(row); historyByAsin.set(asin, history);
+    const productName = String(row.productName || "").trim(); const nameKey = normalizeProductText(productName);
+    if (!nameKey) continue;
+    const names = namesByAsin.get(asin) || new Map(); const name = names.get(nameKey) || { productName, rowNumbers: [] }; name.rowNumbers.push(row.rowNumber!); names.set(nameKey, name); namesByAsin.set(asin, names);
+    const asins = asinsByName.get(nameKey) || new Map(); const rowNumbers = asins.get(asin) || []; rowNumbers.push(row.rowNumber!); asins.set(asin, rowNumbers); asinsByName.set(nameKey, asins);
+  }
+  const zeroCosts = [...historyByAsin.entries()].map(([asin, history]) => {
+    const latest = history[history.length - 1];
+    if (numeric(latest.cost) !== 0) return null;
+    return { asin, productName: latest.productName, rowNumber: latest.rowNumber, timestamp: latest.timestamp, hadPastPositiveCost: history.slice(0, -1).some((row) => (numeric(row.cost) || 0) > 0) };
+  }).filter(Boolean);
+  const sameAsinDifferentNames = [...namesByAsin.entries()].filter(([, names]) => names.size > 1).map(([asin, names]) => ({ asin, names: [...names.values()] }));
+  const sameNameDifferentAsins = [...asinsByName.entries()].filter(([, asins]) => asins.size > 1).map(([normalizedName, asins]) => ({ normalizedName, asins: [...asins.entries()].map(([asin, rowNumbers]) => ({ asin, rowNumbers })) }));
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const largeRecentChanges: Array<Record<string, unknown>> = [];
+  for (const [asin, history] of historyByAsin) {
+    for (let index = 1; index < history.length; index += 1) {
+      const previous = numeric(history[index - 1].cost); const incoming = numeric(history[index].cost); const changedAt = Date.parse(String(history[index].timestamp));
+      if (previous === null || incoming === null || previous === 0 || !Number.isFinite(changedAt) || changedAt < cutoff) continue;
+      const changePercent = Math.abs(incoming - previous) / Math.abs(previous) * 100;
+      if (changePercent > 50) largeRecentChanges.push({ asin, previousCost: previous, incomingCost: incoming, changePercent: Number(changePercent.toFixed(2)), timestamp: history[index].timestamp, rowNumber: history[index].rowNumber });
+    }
+  }
+  return {
+    auditedRows: rows.length, deletedRowsIgnored: allRows.length - rows.length,
+    zeroCostAsinCount: zeroCosts.length, zeroCosts,
+    sameAsinDifferentNamesCount: sameAsinDifferentNames.length, sameAsinDifferentNames,
+    sameNameDifferentAsinsCount: sameNameDifferentAsins.length, sameNameDifferentAsins,
+    largeRecentChangesCount: largeRecentChanges.length, largeRecentChanges,
+  };
+}
+
 export async function markRowDeleted(sheet: "cost" | "stock", rowNumber: number, asin: string) {
   if (sheet !== "cost" && sheet !== "stock") throw new Error("sheet cost veya stock olmali.");
   if (!Number.isInteger(rowNumber) || rowNumber < 2) throw new Error("row_number 2 veya daha buyuk bir tam sayi olmali.");
@@ -744,7 +888,7 @@ export const sheetsTools = [
   { name: "get_cost_history", description: "Belirtilen ASIN icin gecmis maliyet kayitlarini dondurur.", inputSchema: { type: "object", properties: { asin: { type: "string" } }, required: ["asin"] } },
   {
     name: "add_cost",
-    description: "Google Sheets'e YENI SATIR olarak urun maliyeti ekler. Eksik detaylar (or: productName, boyutlar) onceki kayitlardan otomatik tamamlanir.",
+    description: "Google Sheets'e maliyet ekler. Ayni ASIN'de farkli veri, sifir maliyet, buyuk maliyet/agirlik degisimi veya cok farkli urun adi varsa yazmadan 15 dakikalik tek kullanimlik confirm_token ister.",
     inputSchema: {
       type: "object",
       properties: {
@@ -752,7 +896,7 @@ export const sheetsTools = [
         en: { type: "number", description: "En (cm)" }, boy: { type: "number", description: "Boy (cm)" },
         yukseklik: { type: "number", description: "Yukseklik (cm)" },
         agirlik: { type: "number", description: "Agirlik (kg)" }, paket_durumu: { type: "string" },
-        notes: { type: "string", default: "" },
+        notes: { type: "string", default: "" }, confirm_token: { type: "string", description: "confirmation_required yanitindaki tek kullanimlik token" },
       },
       required: ["asin", "cost"],
     },
@@ -760,8 +904,8 @@ export const sheetsTools = [
   { name: "get_current_stock", description: "Belirtilen ASIN icin en guncel stoku dondurur.", inputSchema: { type: "object", properties: { asin: { type: "string" } }, required: ["asin"] } },
   { name: "get_stock_history", description: "Belirtilen ASIN icin gecmis stok kayitlarini dondurur.", inputSchema: { type: "object", properties: { asin: { type: "string" } }, required: ["asin"] } },
   {
-    name: "add_stock", description: "Google Sheets'e YENI SATIR olarak urun stoku ekler.",
-    inputSchema: { type: "object", properties: { asin: { type: "string" }, product_name: { type: "string" }, stock: { type: "number" }, notes: { type: "string", default: "" } }, required: ["asin", "stock"] },
+    name: "add_stock", description: "Google Sheets'e stok ekler. Ayni ASIN icin farkli stok veya cok farkli urun adi gelirse yazmadan 15 dakikalik tek kullanimlik confirm_token ister.",
+    inputSchema: { type: "object", properties: { asin: { type: "string" }, product_name: { type: "string" }, stock: { type: "number" }, notes: { type: "string", default: "" }, confirm_token: { type: "string" } }, required: ["asin", "stock"] },
   },
   { name: "list_current_values", description: "Current Values sekmesindeki tum urunlerin guncel maliyet ve stok durumlarini listeler.", inputSchema: { type: "object", properties: {} } },
   {
@@ -861,6 +1005,11 @@ export const sheetsTools = [
   {
     name: "find_duplicates",
     description: "Ayni ASIN'in farkli isimlerini ve ayni isimle kayitli farkli ASIN'leri satir numaralariyla bulur.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "audit_cost_entries",
+    description: "Maliyeti sifir olan ASIN'leri, gecmiste pozitif maliyeti olanlari, ASIN-ad uyusmazliklarini ve son 7 gundeki %50'den buyuk maliyet degisimlerini salt okunur denetler.",
     inputSchema: { type: "object", properties: {} },
   },
   {

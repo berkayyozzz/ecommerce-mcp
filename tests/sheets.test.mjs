@@ -6,6 +6,7 @@ import {
   resolveHeaderIndexes,
   sheetDateKey,
   sheetsTools,
+  levenshteinRatio,
 } from "../dist/services/sheets.js";
 
 test("normalizes Turkish headers and resolves reordered columns", () => {
@@ -40,6 +41,11 @@ test("formats MCP timestamps like Google Form timestamps", () => {
   assert.equal(formatSheetTimestamp(new Date("2026-09-23T12:24:16Z")), "9/23/2026 15:24:16");
 });
 
+test("detects very different product names", () => {
+  assert.ok(levenshteinRatio("IGS-601", "602") < 0.5);
+  assert.ok(levenshteinRatio("Diamond pestemal red", "Diamond pestemal red") === 1);
+});
+
 test("registers all requested Sheets tools", () => {
   const names = new Set(sheetsTools.map((tool) => tool.name));
   for (const name of [
@@ -53,6 +59,7 @@ test("registers all requested Sheets tools", () => {
     "get_missing_fields",
     "find_duplicates",
     "mark_row_deleted",
+    "audit_cost_entries",
   ]) {
     assert.ok(names.has(name), `${name} is not registered`);
   }

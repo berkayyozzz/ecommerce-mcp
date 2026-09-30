@@ -67,6 +67,7 @@ import {
   cloneCost,
   getMissingFields,
   findDuplicates,
+  auditCostEntries,
   markRowDeleted,
   type CostInput,
   type StockInput,
@@ -609,7 +610,8 @@ function createMcpServer() {
           args?.yukseklik !== undefined ? Number(args?.yukseklik) : undefined,
           args?.agirlik !== undefined ? Number(args?.agirlik) : undefined,
           args?.paket_durumu ? String(args?.paket_durumu) : undefined,
-          args?.notes ? String(args?.notes) : ""
+          args?.notes ? String(args?.notes) : "",
+          args?.confirm_token ? String(args.confirm_token) : undefined,
         );
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
@@ -626,7 +628,8 @@ function createMcpServer() {
           String(args?.asin || ""),
           String(args?.product_name || ""),
           Number(args?.stock || 0),
-          args?.notes ? String(args?.notes) : ""
+          args?.notes ? String(args?.notes) : "",
+          args?.confirm_token ? String(args.confirm_token) : undefined,
         );
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
@@ -701,6 +704,10 @@ function createMcpServer() {
       }
       if (name === "find_duplicates") {
         const result = await findDuplicates();
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      if (name === "audit_cost_entries") {
+        const result = await auditCostEntries();
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       if (name === "mark_row_deleted") {

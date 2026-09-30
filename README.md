@@ -46,3 +46,11 @@ npm start
 ```
 
 The health endpoint does not require authentication. MCP requests require the OAuth bearer token issued after the connector password form.
+# Product cost data safety
+
+`add_cost` and `add_stock` do not silently overwrite a different value for an existing ASIN. They return `confirmation_required` with the existing and incoming values, warnings, and a one-use 15-minute `confirm_token`. Call the same tool again with that token to append the reviewed change. Zero cost always requires confirmation. Large cost/weight changes and dissimilar product names are highlighted. Bulk tools reject conflicting rows so they cannot bypass this gate.
+
+`update_current_values` ignores source rows whose NOT/Notes field contains `SİLİNECEK`, and `audit_cost_entries` reports zero costs, ASIN/name conflicts, name/ASIN conflicts, and cost changes greater than 50% during the last seven days.
+
+Google Form submissions bypass MCP. Copy `scripts/google-form-duplicate-alert.gs` into the spreadsheet's bound Apps Script project, set the `ALERT_EMAIL` script property, and create an installable **On form submit** trigger for `onFormSubmit`. It sends an email when the submitted ASIN already exists or cost is zero; it does not block the form submission.
+
