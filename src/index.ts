@@ -239,7 +239,7 @@ app.post("/token", (req, res) => {
 
 function createMcpServer() {
   const server = new Server(
-    { name: "ecommerce-mcp-server", version: "1.3.0" },
+    { name: "ecommerce-mcp-server", version: "1.4.0" },
     { capabilities: { tools: {} } },
   );
 
@@ -760,7 +760,7 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "ecommerce-mcp",
-    version: "1.3.0",
+    version: "1.4.0",
     mcpMode: "stateless",
     configured: {
       connectorAuth: Boolean(process.env.MCP_CONNECTOR_SECRET),
