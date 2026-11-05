@@ -76,6 +76,8 @@ import {
 dotenv.config();
 
 const app = express();
+// Render terminates HTTPS at its proxy; use its forwarded protocol for OAuth URLs.
+app.set("trust proxy", 1);
 const instagramMaxMediaMb = Math.max(1, Number(process.env.INSTAGRAM_MAX_MEDIA_MB || 100));
 app.use(cors());
 app.use(express.urlencoded({ extended: false }));
